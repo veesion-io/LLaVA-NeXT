@@ -18,19 +18,19 @@ nvidia-smi
 
 ################ Arnold Jobs ################
 
-LLM_VERSION="Qwen/Qwen2-7B-Instruct"
+LLM_VERSION="meta-llama/Llama-4-Scout-17B-16E-Instruct"
 LLM_VERSION_CLEAN="${LLM_VERSION//\//_}"
 VISION_MODEL_VERSION="google/siglip-so400m-patch14-384"
 VISION_MODEL_VERSION_CLEAN="${VISION_MODEL_VERSION//\//_}"
 #
 
-BASE_RUN_NAME="llavanext-google_siglip-so400m-patch14-384-Qwen_Qwen2-7B-Instruct-mlp2x_gelu-pretrain_blip558k_plain"
+BASE_RUN_NAME="llavanext-google_siglip-so400m-patch14-384-${LLM_VERSION_CLEAN}-mlp2x_gelu-pretrain_blip558k_plain"
 echo "BASE_RUN_NAME: ${BASE_RUN_NAME}"
 
 # Stage 2
 PROMPT_VERSION="qwen_1_5"
 MID_RUN_NAME="llavanext-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-ov_to_video_am9"
-PREV_STAGE_CHECKPOINT="lmms-lab/llava-onevision-qwen2-0.5b-ov"
+PREV_STAGE_CHECKPOINT="meta-llama/Llama-4-Scout-17B-16E-Instruct"
 echo "PREV_STAGE_CHECKPOINT: ${PREV_STAGE_CHECKPOINT}"
 echo "MID_RUN_NAME: ${MID_RUN_NAME}"
 
@@ -62,7 +62,6 @@ deepspeed --master_port 30000 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 2 \
-    --evaluation_strategy "no" \
     --save_strategy "steps" \
     --save_steps 500 \
     --save_total_limit 1 \
@@ -86,5 +85,6 @@ deepspeed --master_port 30000 \
     --mm_spatial_pool_stride 2 \
     --attn_implementation "sdpa" \
     --verbose_logging
+    # --evaluation_strategy "no" \
 #    --force_sample False \
 exit 0;
