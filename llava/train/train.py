@@ -59,10 +59,8 @@ IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= versio
 
 class DebugCallback(TrainerCallback):
     def on_step_begin(self, args, state, control, **kwargs):
-        rank0_print(f"DEBUG_LOG: Callback - on_step_begin. Step: {state.global_step}")
 
     def on_step_end(self, args, state, control, **kwargs):
-        rank0_print(f"DEBUG_LOG: Callback - on_step_end. Step: {state.global_step}")
         # It might be useful to see the logs that the trainer itself produces
         # but only log if there's something new to avoid too much noise.
         # This requires checking if new logs are available since the last call,
@@ -70,7 +68,6 @@ class DebugCallback(TrainerCallback):
         # Or simply rely on on_log.
 
     def on_log(self, args, state, control, logs=None, **kwargs):
-        rank0_print(f"DEBUG_LOG: Callback - on_log. Step: {state.global_step}, Logs: {logs}")
 
 
 class S3UploadCallback(TrainerCallback):
@@ -1395,7 +1392,6 @@ class DataCollatorForSupervisedDataset(object):
         return input_ids
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        rank0_print(f"DEBUG_LOG: DataCollator processing batch of {len(instances)} samples")
         input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
         # input_ids, labels, ids = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels", "id"))
         input_ids = [_input_ids[: self.tokenizer.model_max_length] for _input_ids in input_ids]
@@ -1422,25 +1418,19 @@ class DataCollatorForSupervisedDataset(object):
         if "prompt" in instances[0]:
             batch["prompts"] = [instance["prompt"] for instance in instances]
 
-        rank0_print(f"DEBUG_LOG: DataCollator finished processing batch. Final batch keys: {list(batch.keys())}")
         return batch
 
 
 def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
-    rank0_print("DEBUG_LOG: make_supervised_data_module called")
     # train_dataset = LazySupervisedDataset(tokenizer=tokenizer, data_path=data_args.data_path, data_args=data_args)
     dataset = TrackSegmentDataset(tokenizer=tokenizer, data_path=data_args.data_path, data_args=data_args)
-    rank0_print(f"DEBUG_LOG: Created TrackSegmentDataset with {len(dataset)} samples")
     generator = torch.Generator().manual_seed(42)
     train_dataset, eval_dataset = random_split(dataset, [0.8, 0.2], generator=generator)
-    rank0_print(f"DEBUG_LOG: Split dataset - train: {len(train_dataset)}, eval: {len(eval_dataset)}")
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
-    rank0_print("DEBUG_LOG: Created DataCollatorForSupervisedDataset")
     result = dict(train_dataset=LLaVASubset(train_dataset),
                 eval_dataset=LLaVASubset(eval_dataset),
                 data_collator=data_collator)
-    rank0_print(f"DEBUG_LOG: make_supervised_data_module returning: {result.keys()}")
     return result
 
 
@@ -1566,7 +1556,6 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
 
                 deepspeed.utils.set_z3_leaf_modules(model, [Qwen2MoeSparseMoeBlock])
             else:
-                rank0_print(f"DEBUG: get_model: Calling LlavaQwenForCausalLM.from_pretrained for {model_args.model_name_or_path} with customized_kwargs: {customized_kwargs}")
                 model = LlavaQwenForCausalLM.from_pretrained(
                     model_args.model_name_or_path,
                     cache_dir=training_args.cache_dir,
@@ -1575,7 +1564,6 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
                     low_cpu_mem_usage=False,
                     **customized_kwargs,
                 )
-                rank0_print(f"DEBUG: get_model: Calling LlavaQwenForCausalLM.from_pretrained done")
         elif "gemma" in model_args.model_name_or_path.lower():
             model = LlavaGemmaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
@@ -1645,8 +1633,6 @@ def train(attn_implementation=None):
         rank0_print("WARNING: Disabling persistent_workers because num_workers=0")
         training_args.dataloader_persistent_workers = False
 
-    rank0_print("DEBUG_LOG: Entered train() function.")
-    rank0_print("DEBUG_LOG: Applied comprehensive distributed training fixes:")
     rank0_print(f"  - TORCH_NCCL_ENABLE_MONITORING: {os.environ.get('TORCH_NCCL_ENABLE_MONITORING')}")
     rank0_print(f"  - TORCH_NCCL_BLOCKING_WAIT: {os.environ.get('TORCH_NCCL_BLOCKING_WAIT')}")
     rank0_print(f"  - NCCL_SOCKET_TIMEOUT: {os.environ.get('NCCL_SOCKET_TIMEOUT')}")
@@ -1659,15 +1645,10 @@ def train(attn_implementation=None):
     else:
         rank0_print("INFO: torch_compile is disabled")
 
-    # This print statement is the one that successfully executed in the previous run
-    rank0_print(f"DEBUG_LOG: Before get_model. Bits for quantization: {training_args.bits if hasattr(training_args, 'bits') and training_args.bits in [4,8] else 'Not 4/8 bit'}. Vision Tower: {model_args.vision_tower}")
-
     # Initialize bnb_model_from_pretrained_args right before it's used in the get_model call
     bnb_model_from_pretrained_args = {}
-    rank0_print(f"DEBUG_LOG: Initialized bnb_model_from_pretrained_args = {bnb_model_from_pretrained_args}")
 
     model = get_model(model_args, training_args, bnb_model_from_pretrained_args)
-    rank0_print(f"DEBUG_LOG: After get_model. Model type: {type(model)}")
 
     model.config.use_cache = False
     if model_args.rope_scaling_factor is not None and model_args.rope_scaling_type is not None:
@@ -1875,7 +1856,6 @@ def train(attn_implementation=None):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
 
-    rank0_print("DEBUG_LOG: Before tokenizer loading.")
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.model_name_or_path if model_args.model_name_or_path is not None else model_args.vision_tower, # if model_name_or_path is None, use vision_tower as tokenizer
         cache_dir=training_args.cache_dir,
@@ -1883,7 +1863,6 @@ def train(attn_implementation=None):
         padding_side="right",
         use_fast=False,
     )
-    rank0_print("DEBUG_LOG: After tokenizer loading.")
 
     if model_args.version == "v0":
         if tokenizer.pad_token is None:
@@ -2011,21 +1990,15 @@ def train(attn_implementation=None):
         model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
 
-    rank0_print("DEBUG_LOG: Before make_supervised_data_module()") # DEBUG
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
-    rank0_print(f"DEBUG_LOG: After make_supervised_data_module(). Train dataset type: {type(data_module.get('train_dataset'))}") # DEBUG
 
-    rank0_print("DEBUG_LOG: Before LLaVATrainer()") # DEBUG
     trainer = LLaVATrainer(
         model=model, tokenizer=tokenizer, args=training_args,
         callbacks=[S3UploadCallback(), DebugCallback()] if os.environ.get("RUN_ENV") == "prod" else [DebugCallback()],
         **data_module)
-    rank0_print("DEBUG_LOG: After LLaVATrainer()") # DEBUG
     
     # Test the data loader to see if it works
-    rank0_print("DEBUG_LOG: Testing train dataloader...")
     train_dataloader = trainer.get_train_dataloader()
-    rank0_print(f"DEBUG_LOG: Train dataloader created successfully. Length: {len(train_dataloader)}")
     
     # Add progress indicator for first batch loading with timing
     import time
@@ -2046,36 +2019,20 @@ def train(attn_implementation=None):
     
     rank0_print(f"🎯 EXPECTED PERFORMANCE: With batch_size={training_args.per_device_train_batch_size*training_args.world_size}, should be {4/1:.0f}x faster than before!")
     
-    rank0_print("DEBUG_LOG: Finished testing dataloader. About to call trainer.train()")
 
     if list(Path(training_args.output_dir).glob("checkpoint-*")):
-        rank0_print("DEBUG_LOG: Checkpoint found. Before trainer.train(resume_from_checkpoint=True)") # DEBUG
-        rank0_print("DEBUG_LOG: Trainer state before train() call - world_size: {}, local_rank: {}".format(training_args.world_size, training_args.local_rank))
-        rank0_print("DEBUG_LOG: About to call trainer.train(resume_from_checkpoint=True) - this is where we expect the hang")
         trainer.train(resume_from_checkpoint=True)
-        rank0_print("DEBUG_LOG: After trainer.train(resume_from_checkpoint=True)") # DEBUG
     else:
-        rank0_print("DEBUG_LOG: No checkpoint. Before trainer.train()") # DEBUG
-        rank0_print("DEBUG_LOG: Trainer state before train() call - world_size: {}, local_rank: {}".format(training_args.world_size, training_args.local_rank))
-        rank0_print("DEBUG_LOG: About to call trainer.train() - this is where we expect the hang")
         trainer.train()
-        rank0_print("DEBUG_LOG: After trainer.train()") # DEBUG
 
-    rank0_print(f"DEBUG_LOG: Before trainer.save_state()")
     trainer.save_state()
-    rank0_print(f"DEBUG_LOG: After trainer.save_state()")
 
     model.config.use_cache = True
 
     if training_args.lora_enable:
-        rank0_print(f"DEBUG: Before safe_save_model_for_hf_trainer (LoRA enabled)")
         safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir, lora_mode=True)
-        rank0_print(f"DEBUG: After safe_save_model_for_hf_trainer (LoRA enabled)")
     else:
-        rank0_print(f"DEBUG: Before safe_save_model_for_hf_trainer (LoRA disabled)")
         safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
-        rank0_print(f"DEBUG: After safe_save_model_for_hf_trainer (LoRA disabled)")
-    rank0_print("DEBUG: Exiting train() function.")
 
 
 if __name__ == "__main__":

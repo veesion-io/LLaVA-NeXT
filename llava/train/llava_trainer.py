@@ -320,8 +320,6 @@ class LLaVATrainer(Trainer):
             rank0_print(f"Error printing video description sample: {e}")
             # Additional debug info for string processing errors
             if "sequence item" in str(e) and "expected str instance" in str(e):
-                rank0_print("DEBUG: This is likely a string processing error with None values")
-                rank0_print("DEBUG: The training will continue normally - this is just a logging issue")
 
     def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
         """

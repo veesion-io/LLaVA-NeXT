@@ -79,26 +79,17 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         dpo_forward: Optional[bool] = False,
         cache_position=None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        rank0_print(f"DEBUG_LOG: LlavaQwenForCausalLM.forward entered. Initial input_ids shape: {input_ids.shape if input_ids is not None else 'None'}, images type: {type(images)}")
         if images is not None and isinstance(images, list) and len(images) > 0 and isinstance(images[0], torch.Tensor):
-            rank0_print(f"DEBUG_LOG: LlavaQwenForCausalLM.forward - Initial images[0] shape: {images[0].shape}, dtype: {images[0].dtype}, device: {images[0].device}")
         elif images is not None and isinstance(images, torch.Tensor):
-             rank0_print(f"DEBUG_LOG: LlavaQwenForCausalLM.forward - Initial images tensor shape: {images.shape}, dtype: {images.dtype}, device: {images.device}")
 
         original_inputs_embeds_is_none = inputs_embeds is None
-        rank0_print(f"DEBUG_LOG: LlavaQwenForCausalLM.forward - original_inputs_embeds_is_none: {original_inputs_embeds_is_none}")
 
         if original_inputs_embeds_is_none:
-            rank0_print(f"DEBUG_LOG: LlavaQwenForCausalLM.forward - Before prepare_inputs_labels_for_multimodal")
             # Ensure modalities is passed correctly
             (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities if modalities is not None else ["image"], image_sizes)
-            rank0_print(f"DEBUG_LOG: LlavaQwenForCausalLM.forward - After prepare_inputs_labels_for_multimodal. inputs_embeds shape: {inputs_embeds.shape if inputs_embeds is not None else 'None'}, dtype: {inputs_embeds.dtype if inputs_embeds is not None else 'N/A'}, device: {inputs_embeds.device if inputs_embeds is not None else 'N/A'}")
-            rank0_print(f"DEBUG_LOG: LlavaQwenForCausalLM.forward - input_ids shape after prepare: {input_ids.shape if input_ids is not None else 'None'}")
         else:
-            rank0_print(f"DEBUG_LOG: LlavaQwenForCausalLM.forward - Skipping prepare_inputs_labels_for_multimodal as inputs_embeds were provided.")
 
         if dpo_forward:
-            rank0_print(f"DEBUG_LOG: LlavaQwenForCausalLM.forward - DPO path taken.")
             outputs = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -113,10 +104,8 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
             )
             hidden_states = outputs[0]
             logits = self.lm_head(hidden_states)
-            rank0_print(f"DEBUG_LOG: LlavaQwenForCausalLM.forward - DPO path returning logits and labels.")
             return logits, labels
         else:
-            rank0_print(f"DEBUG_LOG: LlavaQwenForCausalLM.forward - Standard path taken. Before super().forward. inputs_embeds shape: {inputs_embeds.shape if inputs_embeds is not None else 'None'}")
             # Check if cache_position is supported by the underlying model
             import inspect
             forward_signature = inspect.signature(Qwen2ForCausalLM.forward)
@@ -140,7 +129,6 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
                 forward_kwargs['cache_position'] = cache_position
                 
             output = super().forward(**forward_kwargs)
-            rank0_print(f"DEBUG_LOG: LlavaQwenForCausalLM.forward - Standard path. After super().forward.")
             return output
 
     @torch.no_grad()
