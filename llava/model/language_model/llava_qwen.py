@@ -27,6 +27,7 @@ from transformers.generation.utils import GenerateOutput
 # from ...constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from llava.model.llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
 from transformers import Qwen2Config, Qwen2Model, Qwen2ForCausalLM
+from llava.utils import rank0_print
 
 # from .qwen.modeling_qwen import QWenLMHeadModel, QWenModel
 # from .qwen.configuration_qwen import QWenConfig
@@ -78,9 +79,15 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         dpo_forward: Optional[bool] = False,
         cache_position=None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
+        if images is not None and isinstance(images, list) and len(images) > 0 and isinstance(images[0], torch.Tensor):
+        elif images is not None and isinstance(images, torch.Tensor):
 
-        if inputs_embeds is None:
-            (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities, image_sizes)
+        original_inputs_embeds_is_none = inputs_embeds is None
+
+        if original_inputs_embeds_is_none:
+            # Ensure modalities is passed correctly
+            (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities if modalities is not None else ["image"], image_sizes)
+        else:
 
         if dpo_forward:
             outputs = self.model(
@@ -93,25 +100,36 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
+                # cache_position=cache_position # Qwen2Model might not take cache_position directly here
             )
-
             hidden_states = outputs[0]
             logits = self.lm_head(hidden_states)
             return logits, labels
-
         else:
-            return super().forward(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                inputs_embeds=inputs_embeds,
-                labels=labels,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
-            )
+            # Check if cache_position is supported by the underlying model
+            import inspect
+            forward_signature = inspect.signature(Qwen2ForCausalLM.forward)
+            supports_cache_position = 'cache_position' in forward_signature.parameters
+            
+            forward_kwargs = {
+                'input_ids': input_ids,
+                'attention_mask': attention_mask,
+                'position_ids': position_ids,
+                'past_key_values': past_key_values,
+                'inputs_embeds': inputs_embeds,
+                'labels': labels,
+                'use_cache': use_cache,
+                'output_attentions': output_attentions,
+                'output_hidden_states': output_hidden_states,
+                'return_dict': return_dict,
+            }
+            
+            # Only add cache_position if the model supports it
+            if supports_cache_position and cache_position is not None:
+                forward_kwargs['cache_position'] = cache_position
+                
+            output = super().forward(**forward_kwargs)
+            return output
 
     @torch.no_grad()
     def generate(
