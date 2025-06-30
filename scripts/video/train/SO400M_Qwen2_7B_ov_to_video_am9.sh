@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Set up the data folder
-# All video and track files should be downloaded from the scalable-training-dataset S3 bucket
+# All video and track files should be downloaded from the scalable-training-dataset-us-east-1 S3 bucket
 # No local paths should be used for video/track files
 #IMAGE_FOLDER="/ssd2/kchoi/experiments/DLT-138/Simone_28_one_video_one_label/videos/"
 #VIDEO_FOLDER="/ssd2/kchoi/experiments/DLT-138/Simone_28_one_video_one_label/videos/"
@@ -11,7 +11,7 @@
 #VIDEO_FOLDER="/home/veesion/gemini_engineering_subset/tracks_segments/"
 # DATA_YAML="scripts/video/train/exp.yaml" # e.g exp.yaml
 mkdir -p data
-aws s3 cp s3://scalable-training-dataset/gemini_fine_tuning/32k/gemini_finetuning_subset_cheating_description.json data/gemini_finetuning_subset_cheating_description.json
+aws s3 cp s3://scalable-training-dataset-us-east-1/gemini_fine_tuning/32k/gemini_finetuning_subset_cheating_description.json data/gemini_finetuning_subset_cheating_description.json
 DATA_YAML="data/gemini_finetuning_subset_cheating_description.json"
 
 ############### Prepare Envs #################

@@ -17,7 +17,7 @@ from torchvision.transforms.v2.functional import pad, crop, resize, \
     convert_bounding_box_format
 
 
-Bucket = Literal["scalable-training-dataset"]
+Bucket = Literal["scalable-training-dataset-us-east-1"]
 VIDEO_PREFIX = Path("Simone_28_full/videos/")
 PICKLE_PREFIX = Path("gemini_fine_tuning/32k/people_masks/")
 
@@ -275,9 +275,9 @@ def load_video_track_segment(
     video_key = (VIDEO_PREFIX / video_id).with_suffix(".mp4")
     pkl_key = (PICKLE_PREFIX / video_id).with_suffix(".pkl")
     frames_boxes = pickle.load(
-        download_from_s3(s3_client, 'scalable-training-dataset', pkl_key))
+        download_from_s3(s3_client, 'scalable-training-dataset-us-east-1', pkl_key))
 
-    data = download_from_s3(s3_client, 'scalable-training-dataset', video_key,
+    data = download_from_s3(s3_client, 'scalable-training-dataset-us-east-1', video_key,
                             seekable=True)
     decoder = VideoDecoder(data)
 
