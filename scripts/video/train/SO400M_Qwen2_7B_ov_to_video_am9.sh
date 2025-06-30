@@ -1,12 +1,14 @@
 #!/bin/bash
 
 # Set up the data folder
+# All video and track files should be downloaded from the scalable-training-dataset S3 bucket
+# No local paths should be used for video/track files
 #IMAGE_FOLDER="/ssd2/kchoi/experiments/DLT-138/Simone_28_one_video_one_label/videos/"
 #VIDEO_FOLDER="/ssd2/kchoi/experiments/DLT-138/Simone_28_one_video_one_label/videos/"
 #IMAGE_FOLDER="/home/veesion/gemini_engineering_subset/tracks_segments_resampled/"
 #VIDEO_FOLDER="/home/veesion/gemini_engineering_subset/tracks_segments_resampled/"
-IMAGE_FOLDER="/home/veesion/gemini_engineering_subset/tracks_segments/"
-VIDEO_FOLDER="/home/veesion/gemini_engineering_subset/tracks_segments/"
+#IMAGE_FOLDER="/home/veesion/gemini_engineering_subset/tracks_segments/"
+#VIDEO_FOLDER="/home/veesion/gemini_engineering_subset/tracks_segments/"
 # DATA_YAML="scripts/video/train/exp.yaml" # e.g exp.yaml
 mkdir -p data
 aws s3 cp s3://scalable-training-dataset/gemini_fine_tuning/32k/gemini_finetuning_subset_cheating_description.json data/gemini_finetuning_subset_cheating_description.json
@@ -63,8 +65,6 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --model_name_or_path $PREV_STAGE_CHECKPOINT \
     --version $PROMPT_VERSION \
     --data_path $DATA_YAML \
-    --image_folder $IMAGE_FOLDER \
-    --video_folder $VIDEO_FOLDER \
     --mm_tunable_parts="mm_vision_tower" \
     --mm_vision_tower_lr=2e-6 \
     --vision_tower ${VISION_MODEL_VERSION} \
