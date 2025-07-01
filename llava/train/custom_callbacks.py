@@ -43,12 +43,17 @@ class SelectiveLoggingCallback(TrainerCallback):
                     total_reserved = 0
                     
                     for i in range(torch.cuda.device_count()):
-                        allocated = torch.cuda.memory_allocated(i) / 1024**3  # GB
-                        reserved = torch.cuda.memory_reserved(i) / 1024**3   # GB
-                        total = torch.cuda.get_device_properties(i).total_memory / 1024**3  # GB
-                        memory_usage.append(f"GPU{i}: {allocated:.1f}GB/{reserved:.1f}GB/{total:.1f}GB")
-                        total_allocated += allocated
-                        total_reserved += reserved
+                        try:
+                            allocated = torch.cuda.memory_allocated(i) / 1024**3  # GB
+                            reserved = torch.cuda.memory_reserved(i) / 1024**3   # GB
+                            total = torch.cuda.get_device_properties(i).total_memory / 1024**3  # GB
+                            memory_usage.append(f"GPU{i}: {allocated:.1f}GB/{reserved:.1f}GB/{total:.1f}GB")
+                            total_allocated += allocated
+                            total_reserved += reserved
+                        except Exception as e:
+                            memory_usage.append(f"GPU{i}: Error - {e}")
+                            total_allocated += 0
+                            total_reserved += 0
                     
                     rank0_print(f"Step {self.step_count}: Memory - {' | '.join(memory_usage)}")
                     

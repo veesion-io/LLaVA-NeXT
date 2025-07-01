@@ -249,15 +249,31 @@ class LLaVATrainer(Trainer):
                 model.eval()
                 with torch.no_grad():
                     outputs = model(**inputs)
-                # Assume outputs['logits'] or outputs.logits is present
-                logits = outputs["logits"] if isinstance(outputs, dict) and "logits" in outputs else getattr(outputs, "logits", None)
+                # Get logits from outputs
+                logits = None
+                if isinstance(outputs, dict) and "logits" in outputs:
+                    logits = outputs["logits"]
+                elif hasattr(outputs, "logits"):
+                    logits = outputs.logits
+                
                 if logits is not None:
+                    # Get the most likely tokens (argmax of logits)
                     pred_ids = logits.argmax(-1)
+                    
+                    # Decode the tokens to text
                     decoded = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+                    
+                    # Log the first 2 video descriptions
                     for i, desc in enumerate(decoded[:2]):  # Only log first 2 in batch
-                        rank0_print(f"Step {self.state.global_step} - Video {i+1} Description: {desc}")
+                        if desc.strip():  # Only log non-empty descriptions
+                            # Truncate long descriptions
+                            if len(desc) > 150:
+                                desc = desc[:150] + "..."
+                            rank0_print(f"Step {self.state.global_step} - Video {i+1} Generated: {desc}")
+                        else:
+                            rank0_print(f"Step {self.state.global_step} - Video {i+1} Generated: [Empty description]")
                 else:
-                    rank0_print(f"Step {self.state.global_step} - No logits in outputs for video description logging.")
+                    rank0_print(f"Step {self.state.global_step} - No logits available for video description logging")
                 model.train()
             except Exception as e:
                 rank0_print(f"Step {self.state.global_step} - Error logging video descriptions: {e}")
