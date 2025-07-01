@@ -260,6 +260,8 @@ class LLaVATrainer(Trainer):
                     # Get the most likely tokens (argmax of logits)
                     pred_ids = logits.float().argmax(-1)
                     
+                    # Ensure pred_ids are in the correct format for tokenizer (long integers on CPU)
+                    pred_ids = pred_ids.long().cpu()
                     # Decode the tokens to text
                     decoded = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
                     
