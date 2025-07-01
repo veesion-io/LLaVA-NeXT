@@ -4,6 +4,11 @@ from transformers import TrainerCallback
 from llava.utils import rank0_print
 import json
 from typing import Dict, Any
+try:
+    import pynvml
+    PYNVML_AVAILABLE = True
+except ImportError:
+    PYNVML_AVAILABLE = False
 
 
 class SelectiveLoggingCallback(TrainerCallback):
@@ -40,23 +45,53 @@ class SelectiveLoggingCallback(TrainerCallback):
                 try:
                     memory_usage = []
                     total_allocated = 0
-                    total_reserved = 0
+                    total_memory = 0
                     
-                    for i in range(torch.cuda.device_count()):
+                    if PYNVML_AVAILABLE:
+                        # Use nvidia-ml-py to get accurate memory info across all GPUs
                         try:
-                            # Force sync and context switch to get accurate memory stats
-                            torch.cuda.synchronize(i)
-                            with torch.cuda.device(i):
-                                allocated = torch.cuda.memory_allocated(i) / 1024**3  # GB
-                                reserved = torch.cuda.memory_reserved(i) / 1024**3   # GB
-                                total = torch.cuda.get_device_properties(i).total_memory / 1024**3  # GB
-                                memory_usage.append(f"GPU{i}: {allocated:.1f}GB/{reserved:.1f}GB/{total:.1f}GB")
-                                total_allocated += allocated
-                                total_reserved += reserved
+                            pynvml.nvmlInit()
+                            device_count = pynvml.nvmlDeviceGetCount()
+                            
+                            for i in range(device_count):
+                                handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                                mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                                
+                                used_gb = mem_info.used / 1024**3
+                                total_gb = mem_info.total / 1024**3
+                                free_gb = mem_info.free / 1024**3
+                                
+                                memory_usage.append(f"GPU{i}: {used_gb:.1f}GB/{total_gb:.1f}GB")
+                                total_allocated += used_gb
+                                total_memory += total_gb
+                                
                         except Exception as e:
-                            memory_usage.append(f"GPU{i}: Error - {e}")
-                            total_allocated += 0
-                            total_reserved += 0
+                            rank0_print(f"Step {self.step_count}: NVML error - {e}")
+                            # Fallback to torch method
+                            device_count = torch.cuda.device_count()
+                            for i in range(device_count):
+                                try:
+                                    torch.cuda.synchronize(i)
+                                    allocated = torch.cuda.memory_allocated(i) / 1024**3
+                                    total_gb = torch.cuda.get_device_properties(i).total_memory / 1024**3
+                                    memory_usage.append(f"GPU{i}: {allocated:.1f}GB/{total_gb:.1f}GB")
+                                    total_allocated += allocated
+                                    total_memory += total_gb
+                                except Exception:
+                                    memory_usage.append(f"GPU{i}: Error")
+                    else:
+                        # Fallback to torch method if pynvml not available
+                        device_count = torch.cuda.device_count()
+                        for i in range(device_count):
+                            try:
+                                torch.cuda.synchronize(i)
+                                allocated = torch.cuda.memory_allocated(i) / 1024**3
+                                total_gb = torch.cuda.get_device_properties(i).total_memory / 1024**3
+                                memory_usage.append(f"GPU{i}: {allocated:.1f}GB/{total_gb:.1f}GB")
+                                total_allocated += allocated
+                                total_memory += total_gb
+                            except Exception:
+                                memory_usage.append(f"GPU{i}: Error")
                     
                     rank0_print(f"Step {self.step_count}: Memory - {' | '.join(memory_usage)}")
                     
@@ -64,8 +99,8 @@ class SelectiveLoggingCallback(TrainerCallback):
                     if logs is not None:
                         logs.update({
                             'memory/allocated_gb': total_allocated,
-                            'memory/reserved_gb': total_reserved,
-                            'memory/utilization_percent': (total_allocated / (total_reserved + 1e-6)) * 100
+                            'memory/total_gb': total_memory,
+                            'memory/utilization_percent': (total_allocated / (total_memory + 1e-6)) * 100
                         })
                         
                 except Exception as e:
