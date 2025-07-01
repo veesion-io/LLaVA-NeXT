@@ -41,6 +41,7 @@ from transformers import AutoConfig, TrainerCallback
 from torch.utils.data import Dataset, Subset, random_split
 from llava.constants import IGNORE_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, IMAGE_TOKEN_INDEX
 from llava.train.llava_trainer import LLaVATrainer
+from llava.train.custom_callbacks import SelectiveLoggingCallback, VideoDescriptionCallback, PerformanceOptimizationCallback
 
 from llava import conversation as conversation_lib
 from llava.model import *
@@ -1798,9 +1799,17 @@ def train(attn_implementation=None):
                         module = module.to(torch.bfloat16)
 
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
+    # Create custom callbacks for selective logging and performance optimization
+    custom_callbacks = [
+        S3UploadCallback(),
+        SelectiveLoggingCallback(log_every_n_steps=10),
+        VideoDescriptionCallback(log_every_n_steps=10),
+        PerformanceOptimizationCallback()
+    ]
+    
     trainer = LLaVATrainer(
             model=model, tokenizer=tokenizer, args=training_args,
-            callbacks=[S3UploadCallback()], **data_module)
+            callbacks=custom_callbacks, **data_module)
 
     if list(Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)

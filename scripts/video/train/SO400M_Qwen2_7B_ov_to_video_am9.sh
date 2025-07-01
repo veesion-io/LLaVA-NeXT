@@ -71,7 +71,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --master_addr="${MASTER_PRIVATE_IP}" \
     --master_port=1234 \
   llava/train/train_mem.py \
-    --deepspeed scripts/zero3.json \
+    --deepspeed scripts/zero3_h200_optimized.json \
     --model_name_or_path $PREV_STAGE_CHECKPOINT \
     --version $PROMPT_VERSION \
     --data_path $DATA_YAML \
@@ -102,7 +102,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --weight_decay 0. \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
-    --logging_steps 1 \
+    --logging_steps 10 \
     --tf32 False \
     --model_max_length 32768 \
     --gradient_checkpointing True \
