@@ -191,6 +191,9 @@ class LlavaMetaForCausalLM(ABC):
 
     def encode_images(self, images):
         image_features = self.get_model().get_vision_tower()(images)
+        # Ensure dtype consistency for bf16 training
+        if image_features.dtype != self.get_model().mm_projector[0].weight.dtype:
+            image_features = image_features.to(dtype=self.get_model().mm_projector[0].weight.dtype)
         # image_features = self.get_model().vision_resampler(image_features, images=images)
         image_features = self.get_model().mm_projector(image_features)
         return image_features
