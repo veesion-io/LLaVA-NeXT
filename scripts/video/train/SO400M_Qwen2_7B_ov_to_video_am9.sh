@@ -24,7 +24,7 @@ alias python=python3
 
 # H100-optimized NCCL settings for better performance
 export NCCL_ASYNC_ERROR_HANDLING=1
-export NCCL_DEBUG=INFO
+export NCCL_DEBUG=WARN
 export NCCL_SOCKET_IFNAME="$NCCL_INTERFACE"
 export NCCL_IB_DISABLE=0
 export NCCL_NET_GDR_LEVEL=2  # Enhanced GPU Direct RDMA for H100

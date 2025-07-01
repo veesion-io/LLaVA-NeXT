@@ -37,12 +37,16 @@ class SelectiveLoggingCallback(TrainerCallback):
                 
             # Log GPU memory usage if available
             if torch.cuda.is_available():
-                memory_usage = []
-                for i in range(torch.cuda.device_count()):
-                    allocated = torch.cuda.memory_allocated(i) / 1024**3  # GB
-                    reserved = torch.cuda.memory_reserved(i) / 1024**3   # GB
-                    memory_usage.append(f"GPU{i}: {allocated:.1f}GB/{reserved:.1f}GB")
-                rank0_print(f"Step {self.step_count}: Memory - {' | '.join(memory_usage)}")
+                try:
+                    memory_usage = []
+                    for i in range(torch.cuda.device_count()):
+                        allocated = torch.cuda.memory_allocated(i) / 1024**3  # GB
+                        reserved = torch.cuda.memory_reserved(i) / 1024**3   # GB
+                        total = torch.cuda.get_device_properties(i).total_memory / 1024**3  # GB
+                        memory_usage.append(f"GPU{i}: {allocated:.1f}GB/{reserved:.1f}GB/{total:.1f}GB")
+                    rank0_print(f"Step {self.step_count}: Memory - {' | '.join(memory_usage)}")
+                except Exception as e:
+                    rank0_print(f"Step {self.step_count}: Memory logging failed - {e}")
 
 
 class VideoDescriptionCallback(TrainerCallback):
@@ -53,27 +57,25 @@ class VideoDescriptionCallback(TrainerCallback):
         self.step_count = 0
         self.last_logged_step = 0
         
-    def on_step_end(self, args, state, control, model=None, **kwargs):
+    def on_step_end(self, args, state, control, model=None, inputs=None, **kwargs):
         self.step_count += 1
         
         # Only log every N steps
         if self.step_count % self.log_every_n_steps == 0:
             self.last_logged_step = self.step_count
             
-    def on_prediction_step(self, args, state, control, model=None, inputs=None, **kwargs):
-        # Only log if this is one of our selected steps
-        if self.step_count != self.last_logged_step:
-            return
-            
-        if inputs is not None and 'prompts' in inputs:
-            # Log video descriptions from prompts
-            for i, prompt in enumerate(inputs['prompts'][:2]):  # Log first 2 videos
-                if isinstance(prompt, str) and len(prompt) > 100:
-                    # Truncate long prompts for readability
-                    truncated_prompt = prompt[:200] + "..." if len(prompt) > 200 else prompt
-                    rank0_print(f"Step {self.step_count} - Video {i+1} Description: {truncated_prompt}")
-                elif isinstance(prompt, str):
-                    rank0_print(f"Step {self.step_count} - Video {i+1} Description: {prompt}")
+            # Try to get video descriptions from the current batch
+            if inputs is not None and 'prompts' in inputs:
+                # Log video descriptions from prompts
+                for i, prompt in enumerate(inputs['prompts'][:2]):  # Log first 2 videos
+                    if isinstance(prompt, str) and len(prompt) > 100:
+                        # Truncate long prompts for readability
+                        truncated_prompt = prompt[:200] + "..." if len(prompt) > 200 else prompt
+                        rank0_print(f"Step {self.step_count} - Video {i+1} Description: {truncated_prompt}")
+                    elif isinstance(prompt, str):
+                        rank0_print(f"Step {self.step_count} - Video {i+1} Description: {prompt}")
+            else:
+                rank0_print(f"Step {self.step_count} - No video descriptions available in current batch")
 
 
 class PerformanceOptimizationCallback(TrainerCallback):
@@ -93,5 +95,5 @@ class PerformanceOptimizationCallback(TrainerCallback):
             torch.backends.cudnn.benchmark = True
             torch.backends.cudnn.deterministic = False
             
-            rank0_print("Applied performance optimizations for H200 GPUs")
+            rank0_print("Applied performance optimizations for H100 GPUs")
             self.optimization_applied = True 
