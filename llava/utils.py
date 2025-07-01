@@ -47,8 +47,8 @@ def process_video_with_decord(video_file, data_args):
 
 def process_video_with_pyav(video_file, data_args):
     container = av.open(video_file)
-    # !!! This is the only difference. Using auto threading
-    container.streams.video[0].thread_type = "AUTO"
+    # Set thread type to FRAME to silence SEI type logs
+    container.streams.video[0].thread_type = "FRAME"
 
     video_frames = []
     for packet in container.demux():
