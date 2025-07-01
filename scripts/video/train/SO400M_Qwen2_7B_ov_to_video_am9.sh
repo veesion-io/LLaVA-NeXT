@@ -16,7 +16,8 @@ aws s3 cp s3://scalable-training-dataset/gemini_fine_tuning/32k/gemini_finetunin
 DATA_YAML="data/gemini_finetuning_subset_cheating_description.json"
 
 ############### Prepare Envs #################
-# Install ninja for DeepSpeed JIT compilation
+# Install CUDA development headers and ninja for DeepSpeed JIT compilation
+sudo yum install -y cuda-devel-12-6
 python3 -m pip install ninja
 python3 -m pip install flash-attn --no-build-isolation
 alias python=python3
