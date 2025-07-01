@@ -278,7 +278,9 @@ class LLaVATrainer(Trainer):
                     rank0_print(f"Step {self.state.global_step} - No logits available for video description logging")
                 model.train()
             except Exception as e:
+                import traceback
                 rank0_print(f"Step {self.state.global_step} - Error logging video descriptions: {e}")
+                rank0_print(f"Traceback: {traceback.format_exc()}")
         return loss
 
     def create_accelerator_and_postprocess(self):
