@@ -65,16 +65,58 @@ class S3UploadCallback(TrainerCallback):
         self.bucket = 'scalable-training-dataset'
         name = Path(args.output_dir).absolute().parent.parent.name
         self.prefix = Path('training_checkpoints') / name
+        self.tensorboard_prefix = Path('tensorboard_logs') / name
+        self.last_upload_time = time.time()
+        self.upload_interval = 300  # Upload every 5 minutes
 
     def on_save(self, args, state, control, **kwargs):
         start = time.time()
+        # Upload checkpoints
         for file in Path(args.output_dir).glob('**/*'):
             if file.is_file():
                 prefix = str(self.prefix / file)
                 rank0_print(f"saving {file} to s3://{self.bucket}/{prefix}")
                 self.client.upload_file(file, self.bucket, prefix)
+        
+        # Upload TensorBoard logs
+        self._upload_tensorboard_logs(args)
+        
         end = time.time()
         rank0_print(f"saving to s3 took {end - start} seconds")
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        # Upload TensorBoard logs periodically
+        current_time = time.time()
+        if current_time - self.last_upload_time > self.upload_interval:
+            self._upload_tensorboard_logs(args)
+            self.last_upload_time = current_time
+
+    def _upload_tensorboard_logs(self, args):
+        """Upload TensorBoard logs to S3"""
+        try:
+            # Find TensorBoard log directory
+            tb_log_dir = Path(args.output_dir) / 'runs'
+            if not tb_log_dir.exists():
+                return
+            
+            start = time.time()
+            uploaded_files = 0
+            
+            for file in tb_log_dir.rglob('*'):
+                if file.is_file():
+                    # Create S3 key for TensorBoard logs
+                    relative_path = file.relative_to(tb_log_dir)
+                    s3_key = str(self.tensorboard_prefix / relative_path)
+                    
+                    # Upload file
+                    self.client.upload_file(str(file), self.bucket, s3_key)
+                    uploaded_files += 1
+            
+            if uploaded_files > 0:
+                end = time.time()
+                rank0_print(f"Uploaded {uploaded_files} TensorBoard files to s3://{self.bucket}/{self.tensorboard_prefix} in {end - start:.2f}s")
+        except Exception as e:
+            rank0_print(f"Failed to upload TensorBoard logs: {e}")
 
 
 @dataclass

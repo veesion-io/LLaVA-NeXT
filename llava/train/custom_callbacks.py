@@ -39,12 +39,27 @@ class SelectiveLoggingCallback(TrainerCallback):
             if torch.cuda.is_available():
                 try:
                     memory_usage = []
+                    total_allocated = 0
+                    total_reserved = 0
+                    
                     for i in range(torch.cuda.device_count()):
                         allocated = torch.cuda.memory_allocated(i) / 1024**3  # GB
                         reserved = torch.cuda.memory_reserved(i) / 1024**3   # GB
                         total = torch.cuda.get_device_properties(i).total_memory / 1024**3  # GB
                         memory_usage.append(f"GPU{i}: {allocated:.1f}GB/{reserved:.1f}GB/{total:.1f}GB")
+                        total_allocated += allocated
+                        total_reserved += reserved
+                    
                     rank0_print(f"Step {self.step_count}: Memory - {' | '.join(memory_usage)}")
+                    
+                    # Add memory metrics to logs for TensorBoard
+                    if hasattr(self, 'trainer') and self.trainer is not None:
+                        self.trainer.log({
+                            'memory/allocated_gb': total_allocated,
+                            'memory/reserved_gb': total_reserved,
+                            'memory/utilization_percent': (total_allocated / (total_reserved + 1e-6)) * 100
+                        })
+                        
                 except Exception as e:
                     rank0_print(f"Step {self.step_count}: Memory logging failed - {e}")
 
