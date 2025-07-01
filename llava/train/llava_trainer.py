@@ -258,7 +258,7 @@ class LLaVATrainer(Trainer):
                 
                 if logits is not None:
                     # Get the most likely tokens (argmax of logits)
-                    pred_ids = logits.argmax(-1)
+                    pred_ids = logits.float().argmax(-1)
                     
                     # Decode the tokens to text
                     decoded = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
