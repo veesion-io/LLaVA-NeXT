@@ -23,6 +23,7 @@ python3 -m pip install flash-attn --no-build-isolation
 alias python=python3
 
 # H100-optimized NCCL settings for better performance
+export CPATH="/usr/local/cuda/include:$CPATH"
 export NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_DEBUG=WARN
 export NCCL_SOCKET_IFNAME="$NCCL_INTERFACE"
