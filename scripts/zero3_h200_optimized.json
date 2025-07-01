@@ -53,5 +53,12 @@
         "number_checkpoints": "auto",
         "synchronize_checkpoint_boundary": true,
         "profile": false
+    },
+    
+    "h100_optimizations": {
+        "enable_tensor_cores": true,
+        "enable_fp8_training": true,
+        "memory_efficient_attention": true,
+        "gradient_accumulation_fusion": true
     }
 } 

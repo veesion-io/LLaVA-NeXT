@@ -238,12 +238,30 @@ class LengthGroupedSampler(Sampler):
 
 
 class LLaVATrainer(Trainer):
-
-    # def training_step(self, model, inputs):
-    #     logger.info(f"{self.state.global_step}")
-    #     for key, value in inputs.items():
-    #         logger.info(f"{key}: {len(value)}")
-    #     super().training_step(model, inputs)
+    def training_step(self, model, inputs):
+        # Call the parent to get loss and outputs
+        loss = super().training_step(model, inputs)
+        
+        # Try to log the actual outputs (network predictions)
+        if self.state.global_step % 10 == 0:  # Only log every 10 steps
+            try:
+                # Forward pass (no grad, eval mode)
+                model.eval()
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                # Assume outputs['logits'] or outputs.logits is present
+                logits = outputs["logits"] if isinstance(outputs, dict) and "logits" in outputs else getattr(outputs, "logits", None)
+                if logits is not None:
+                    pred_ids = logits.argmax(-1)
+                    decoded = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+                    for i, desc in enumerate(decoded[:2]):  # Only log first 2 in batch
+                        rank0_print(f"Step {self.state.global_step} - Video {i+1} Description: {desc}")
+                else:
+                    rank0_print(f"Step {self.state.global_step} - No logits in outputs for video description logging.")
+                model.train()
+            except Exception as e:
+                rank0_print(f"Step {self.state.global_step} - Error logging video descriptions: {e}")
+        return loss
 
     def create_accelerator_and_postprocess(self):
         grad_acc_kwargs = {"num_steps": self.args.gradient_accumulation_steps}

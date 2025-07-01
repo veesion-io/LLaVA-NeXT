@@ -53,8 +53,8 @@ class SelectiveLoggingCallback(TrainerCallback):
                     rank0_print(f"Step {self.step_count}: Memory - {' | '.join(memory_usage)}")
                     
                     # Add memory metrics to logs for TensorBoard
-                    if hasattr(self, 'trainer') and self.trainer is not None:
-                        self.trainer.log({
+                    if logs is not None:
+                        logs.update({
                             'memory/allocated_gb': total_allocated,
                             'memory/reserved_gb': total_reserved,
                             'memory/utilization_percent': (total_allocated / (total_reserved + 1e-6)) * 100
@@ -79,18 +79,50 @@ class VideoDescriptionCallback(TrainerCallback):
         if self.step_count % self.log_every_n_steps == 0:
             self.last_logged_step = self.step_count
             
-            # Try to get video descriptions from the current batch
-            if inputs is not None and 'prompts' in inputs:
-                # Log video descriptions from prompts
-                for i, prompt in enumerate(inputs['prompts'][:2]):  # Log first 2 videos
-                    if isinstance(prompt, str) and len(prompt) > 100:
-                        # Truncate long prompts for readability
-                        truncated_prompt = prompt[:200] + "..." if len(prompt) > 200 else prompt
-                        rank0_print(f"Step {self.step_count} - Video {i+1} Description: {truncated_prompt}")
-                    elif isinstance(prompt, str):
-                        rank0_print(f"Step {self.step_count} - Video {i+1} Description: {prompt}")
+            # Try to generate video descriptions from the current batch
+            if inputs is not None and 'images' in inputs and model is not None:
+                try:
+                    # Generate descriptions for first 2 videos in batch
+                    for i in range(min(2, len(inputs['images']))):
+                        if inputs['images'][i] is not None:
+                            # Create a simple prompt for video description
+                            from llava.constants import DEFAULT_IMAGE_TOKEN
+                            prompt = f"{DEFAULT_IMAGE_TOKEN}Describe this video in detail."
+                            
+                            # Tokenize the prompt
+                            from llava.mm_utils import tokenizer_image_token
+                            from llava.constants import IMAGE_TOKEN_INDEX
+                            input_ids = tokenizer_image_token(prompt, model.config.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
+                            
+                            # Generate description
+                            with torch.no_grad():
+                                outputs = model.generate(
+                                    input_ids,
+                                    images=[inputs['images'][i]],
+                                    image_sizes=inputs.get('image_sizes', [None]),
+                                    modalities=inputs.get('modalities', ['video']),
+                                    do_sample=False,
+                                    temperature=0.0,
+                                    max_new_tokens=100,
+                                    pad_token_id=model.config.tokenizer.pad_token_id,
+                                    eos_token_id=model.config.tokenizer.eos_token_id,
+                                )
+                            
+                            # Decode the output
+                            description = model.config.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
+                            # Remove the input prompt from the output
+                            description = description.replace(prompt, "").strip()
+                            
+                            if description:
+                                rank0_print(f"Step {self.step_count} - Video {i+1} Description: {description}")
+                            else:
+                                rank0_print(f"Step {self.step_count} - Video {i+1} Description: [No description generated]")
+                        else:
+                            rank0_print(f"Step {self.step_count} - Video {i+1} Description: [No video data]")
+                except Exception as e:
+                    rank0_print(f"Step {self.step_count} - Error generating video descriptions: {e}")
             else:
-                rank0_print(f"Step {self.step_count} - No video descriptions available in current batch")
+                rank0_print(f"Step {self.step_count} - No video data available in current batch")
 
 
 class PerformanceOptimizationCallback(TrainerCallback):
