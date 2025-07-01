@@ -44,12 +44,15 @@ class SelectiveLoggingCallback(TrainerCallback):
                     
                     for i in range(torch.cuda.device_count()):
                         try:
-                            allocated = torch.cuda.memory_allocated(i) / 1024**3  # GB
-                            reserved = torch.cuda.memory_reserved(i) / 1024**3   # GB
-                            total = torch.cuda.get_device_properties(i).total_memory / 1024**3  # GB
-                            memory_usage.append(f"GPU{i}: {allocated:.1f}GB/{reserved:.1f}GB/{total:.1f}GB")
-                            total_allocated += allocated
-                            total_reserved += reserved
+                            # Force sync and context switch to get accurate memory stats
+                            torch.cuda.synchronize(i)
+                            with torch.cuda.device(i):
+                                allocated = torch.cuda.memory_allocated(i) / 1024**3  # GB
+                                reserved = torch.cuda.memory_reserved(i) / 1024**3   # GB
+                                total = torch.cuda.get_device_properties(i).total_memory / 1024**3  # GB
+                                memory_usage.append(f"GPU{i}: {allocated:.1f}GB/{reserved:.1f}GB/{total:.1f}GB")
+                                total_allocated += allocated
+                                total_reserved += reserved
                         except Exception as e:
                             memory_usage.append(f"GPU{i}: Error - {e}")
                             total_allocated += 0
