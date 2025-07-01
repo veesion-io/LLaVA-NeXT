@@ -265,8 +265,8 @@ class LLaVATrainer(Trainer):
                     # Decode the tokens to text
                     decoded = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
                     
-                    # Log the first 2 video descriptions
-                    for i, desc in enumerate(decoded[:2]):  # Only log first 2 in batch
+                    # Log the first video description
+                    for i, desc in enumerate(decoded[:1]):  # Only log first 1 in batch
                         if desc.strip():  # Only log non-empty descriptions
                             # Truncate long descriptions
                             if len(desc) > 150:
