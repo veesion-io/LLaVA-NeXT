@@ -185,6 +185,8 @@ class TrainingArguments(transformers.TrainingArguments):
     gradient_checkpointing: bool = field(default=True)
     verbose_logging: bool = field(default=False)
     attn_implementation: str = field(default="flash_attention_2", metadata={"help": "Use transformers attention implementation."})
+    fp8: bool = field(default=False, metadata={"help": "Enable FP8 training."})
+    fp8_e4m3: bool = field(default=False, metadata={"help": "Use E4M3 format for FP8 training."})
 
 
 # @dataclass
