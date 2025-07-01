@@ -106,7 +106,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --tf32 False \
     --model_max_length 32768 \
     --gradient_checkpointing True \
-    --dataloader_num_workers 3 \
+    --dataloader_num_workers 8 \
     --lazy_preprocess True \
     --torch_compile True \
     --torch_compile_backend "inductor" \
@@ -117,7 +117,9 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --add_time_instruction True \
     --mm_spatial_pool_stride 2 \
     --verbose_logging \
-    --report_to tensorboard
+    --report_to tensorboard \
+    --fp8 True \
+    --fp8_e4m3 True
     # --attn_implementation "sdpa" \
 #    --force_sample False \
 exit 0;
