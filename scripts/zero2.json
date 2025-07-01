@@ -28,6 +28,7 @@
             "weight_decay": "auto"
         }
     },
+    "disable_fused_adam": true,
     "zero_optimization": {
         "stage": 2,
         "offload_optimizer": {
