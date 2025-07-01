@@ -71,7 +71,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --master_addr="${MASTER_PRIVATE_IP}" \
     --master_port=1234 \
   llava/train/train_mem.py \
-    --deepspeed scripts/zero3_h200_optimized.json \
+    --deepspeed scripts/zero2.json \
     --model_name_or_path $PREV_STAGE_CHECKPOINT \
     --version $PROMPT_VERSION \
     --data_path $DATA_YAML \
