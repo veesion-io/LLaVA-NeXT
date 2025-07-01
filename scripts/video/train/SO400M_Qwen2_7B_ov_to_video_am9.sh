@@ -16,8 +16,20 @@ aws s3 cp s3://scalable-training-dataset/gemini_fine_tuning/32k/gemini_finetunin
 DATA_YAML="data/gemini_finetuning_subset_cheating_description.json"
 
 ############### Prepare Envs #################
+# Install ninja for DeepSpeed JIT compilation
+python3 -m pip install ninja
 python3 -m pip install flash-attn --no-build-isolation
 alias python=python3
+
+# H100-optimized NCCL settings for better performance
+export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_DEBUG=INFO
+export NCCL_SOCKET_IFNAME="$NCCL_INTERFACE"
+export NCCL_IB_DISABLE=0
+export NCCL_NET_GDR_LEVEL=2  # Enhanced GPU Direct RDMA for H100
+export NCCL_P2P_LEVEL=NVL    # NVLink for P5en instances
+export NCCL_NVLS_ENABLE=1    # Enable NVLink SHARP for H100
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
 ############### Show Envs ####################
 
 nvidia-smi
