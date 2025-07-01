@@ -1845,7 +1845,6 @@ def train(attn_implementation=None):
     custom_callbacks = [
         S3UploadCallback(),
         SelectiveLoggingCallback(log_every_n_steps=10),
-        VideoDescriptionCallback(log_every_n_steps=10),
         PerformanceOptimizationCallback()
     ]
     
