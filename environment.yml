@@ -21,6 +21,6 @@ dependencies:
   - py-spy
   - tensorboardx
   - pip
+  - ninja
   - pip:
       - decord
-  - ninja
