@@ -238,7 +238,56 @@ class LengthGroupedSampler(Sampler):
 
 
 class LLaVATrainer(Trainer):
-    def training_step(self, model, inputs):
+    def create_accelerator_and_postprocess(self):
+        # The `accelerator` is created in `Trainer.training_step` which is too late for some parts of the code.
+        # So we create it here and override the one in `Trainer`.
+        # Stolen from: https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/trainer.py#L1210
+
+        # `accelerator_config` is not a field of `self.args` so we pass it explicitly
+        # We need to do this a bit earlier than in the original implementation as we need the accelerator for
+        # `_get_train_sampler`.
+        # `accelerator_config` is not a field of `self.args` so we pass it explicitly
+        kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=self.args.ddp_timeout))
+        
+        accelerator_config = AcceleratorConfig(
+            split_batches=self.args.accelerator_config.split_batches,
+            dispatch_batches=self.args.accelerator_config.dispatch_batches,
+            even_batches=self.args.accelerator_config.even_batches,
+            use_seedable_sampler=self.args.accelerator_config.use_seedable_sampler,
+        )
+        if self.args.fp8:
+            accelerator_config.fp8 = self.args.fp8
+            accelerator_config.fp8_e4m3 = self.args.fp8_e4m3
+
+        if self.args.gradient_accumulation_steps > 1:
+            plugin = GradientAccumulationPlugin(
+                num_steps=self.args.gradient_accumulation_steps, sync_with_dataloader=False
+            )
+            accelerator_config.gradient_accumulation_plugin = plugin
+
+        self.accelerator = Accelerator(
+            deepspeed_plugin=self.args.deepspeed_plugin,
+            gradient_accumulation_steps=self.args.gradient_accumulation_steps,
+            project_config=self.args.get_project_config(),
+            mixed_precision=self.args.mixed_precision,
+            log_with=self.args.report_to,
+            project_dir=self.args.output_dir,
+            dispatch_batches=accelerator_config.dispatch_batches,
+            split_batches=accelerator_config.split_batches,
+            device_placement=self.args.device_placement,
+            kwargs_handlers=[kwargs],
+            accelerator_config=accelerator_config,
+        )
+
+        if self.accelerator.is_main_process:
+            self.accelerator.project_configuration.automatic_checkpoint_naming = (
+                self.args.checkpoint_name is None and self.args.hub_model_id is not None
+            )
+
+        # post-process accelerator
+        self.accelerator = self.accelerator.prepare(
+            self.accelerator,
+        )     def training_step(self, model, inputs):
         # Call the parent to get loss and outputs
         loss = super().training_step(model, inputs)
         
