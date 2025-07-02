@@ -94,7 +94,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --model_name_or_path $PREV_STAGE_CHECKPOINT \
     --version $PROMPT_VERSION \
     --data_path $DATA_YAML \
-    --mm_tunable_parts="mm_vision_tower" \
+    --mm_tunable_parts="mm_vision_tower,mm_language_model" \
     --mm_vision_tower_lr=2e-6 \
     --vision_tower ${VISION_MODEL_VERSION} \
     --mm_projector_type mlp2x_gelu \
