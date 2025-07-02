@@ -302,45 +302,67 @@ class LLaVATrainer(Trainer):
         # Call the parent to get loss and outputs
         loss = super().training_step(model, inputs)
         
-        # Try to log the actual outputs (network predictions)
+        # Try to generate actual video descriptions (proper inference)
         if self.state.global_step % 10 == 0:  # Only log every 10 steps
             try:
-                # Forward pass (no grad, eval mode)
+                # Generate proper descriptions using the model's generate method
                 model.eval()
                 with torch.no_grad():
-                    outputs = model(**inputs)
-                # Get logits from outputs
-                logits = None
-                if isinstance(outputs, dict) and "logits" in outputs:
-                    logits = outputs["logits"]
-                elif hasattr(outputs, "logits"):
-                    logits = outputs.logits
+                    # Extract the first sample from the batch for generation
+                    if 'images' in inputs and inputs['images'] is not None:
+                        batch_size = len(inputs['images']) if isinstance(inputs['images'], list) else inputs['images'].shape[0]
+                        
+                        for i in range(min(1, batch_size)):  # Only generate for first sample
+                            # Create a simple prompt for video description
+                            from llava.constants import DEFAULT_IMAGE_TOKEN
+                            prompt = f"{DEFAULT_IMAGE_TOKEN}Describe this video in detail."
+                            
+                            # Tokenize the prompt
+                            from llava.mm_utils import tokenizer_image_token
+                            from llava.constants import IMAGE_TOKEN_INDEX
+                            input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
+                            
+                            # Prepare images for generation
+                            if isinstance(inputs['images'], list):
+                                images = [inputs['images'][i]]
+                            else:
+                                images = [inputs['images'][i:i+1]]
+                            
+                            # Generate description using proper inference
+                            gen_outputs = model.generate(
+                                input_ids,
+                                images=images,
+                                image_sizes=inputs.get('image_sizes', [None]),
+                                modalities=inputs.get('modalities', ['video']),
+                                do_sample=False,
+                                temperature=0.0,
+                                max_new_tokens=50,
+                                pad_token_id=self.tokenizer.pad_token_id,
+                                eos_token_id=self.tokenizer.eos_token_id,
+                                use_cache=True,
+                            )
+                            
+                            # Decode the generated output
+                            generated_text = self.tokenizer.batch_decode(gen_outputs, skip_special_tokens=True)[0]
+                            # Remove the input prompt from the output
+                            description = generated_text.replace(prompt, "").strip()
+                            
+                            if description:
+                                # Truncate long descriptions
+                                if len(description) > 100:
+                                    description = description[:100] + "..."
+                                rank0_print(f"Step {self.state.global_step} - Video {i+1} Generated: {description}")
+                            else:
+                                rank0_print(f"Step {self.state.global_step} - Video {i+1} Generated: [No description generated]")
+                    else:
+                        rank0_print(f"Step {self.state.global_step} - No video data available for description generation")
                 
-                if logits is not None:
-                    # Get the most likely tokens (argmax of logits)
-                    pred_ids = logits.float().argmax(-1)
-                    
-                    # Ensure pred_ids are in the correct format for tokenizer (long integers on CPU)
-                    pred_ids = pred_ids.long().cpu()
-                    # Decode the tokens to text
-                    decoded = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
-                    
-                    # Log the first video description
-                    for i, desc in enumerate(decoded[:1]):  # Only log first 1 in batch
-                        if desc.strip():  # Only log non-empty descriptions
-                            # Truncate long descriptions
-                            if len(desc) > 150:
-                                desc = desc[:150] + "..."
-                            rank0_print(f"Step {self.state.global_step} - Video {i+1} Generated: {desc}")
-                        else:
-                            rank0_print(f"Step {self.state.global_step} - Video {i+1} Generated: [Empty description]")
-                else:
-                    rank0_print(f"Step {self.state.global_step} - No logits available for video description logging")
                 model.train()
             except Exception as e:
                 import traceback
-                rank0_print(f"Step {self.state.global_step} - Error logging video descriptions: {e}")
+                rank0_print(f"Step {self.state.global_step} - Error generating video descriptions: {e}")
                 rank0_print(f"Traceback: {traceback.format_exc()}")
+                model.train()  # Ensure model is back in training mode
         return loss
 
     def create_accelerator_and_postprocess(self):
