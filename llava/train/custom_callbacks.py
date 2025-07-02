@@ -33,8 +33,12 @@ class SelectiveLoggingCallback(TrainerCallback):
             return
             
         if logs is not None:
-            # Log loss and other metrics
-            rank0_print(f"Step {self.step_count}: Loss = {logs.get('loss', 'N/A'):.4f}")
+            # Log loss and other metrics - fix format error when loss is 'N/A'
+            loss_value = logs.get('loss', 'N/A')
+            if isinstance(loss_value, (int, float)):
+                rank0_print(f"Step {self.step_count}: Loss = {loss_value:.4f}")
+            else:
+                rank0_print(f"Step {self.step_count}: Loss = {loss_value}")
             
             # Log learning rate
             if 'learning_rate' in logs:
