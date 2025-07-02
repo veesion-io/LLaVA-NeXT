@@ -90,11 +90,11 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --master_addr="${MASTER_PRIVATE_IP}" \
     --master_port=1234 \
   llava/train/train_mem.py \
-    --deepspeed scripts/zero3.json \
+    --deepspeed scripts/zero2.json \
     --model_name_or_path $PREV_STAGE_CHECKPOINT \
     --version $PROMPT_VERSION \
     --data_path $DATA_YAML \
-    --mm_tunable_parts="mm_vision_tower" \
+    --mm_tunable_parts="mm_vision_tower,mm_language_model" \
     --mm_vision_tower_lr=2e-6 \
     --vision_tower ${VISION_MODEL_VERSION} \
     --mm_projector_type mlp2x_gelu \
@@ -109,8 +109,8 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --run_name $MID_RUN_NAME \
     --output_dir ./work_dirs/$MID_RUN_NAME \
     --num_train_epochs 5 \
-    --per_device_train_batch_size 5 \
-    --per_device_eval_batch_size 5 \
+    --per_device_train_batch_size 2 \
+    --per_device_eval_batch_size 2 \
     --gradient_accumulation_steps 1 \
     --evaluation_strategy "steps" \
     --eval_steps 500 \
