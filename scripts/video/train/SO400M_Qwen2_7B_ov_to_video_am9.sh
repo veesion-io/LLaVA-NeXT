@@ -116,7 +116,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --eval_steps 1000 \
     --eval_dataset_size 128 \
     --save_strategy "steps" \
-    --save_steps 500 \
+    --save_steps 1000 \
     --save_total_limit 1 \
     --learning_rate 1e-5 \
     --weight_decay 0. \
