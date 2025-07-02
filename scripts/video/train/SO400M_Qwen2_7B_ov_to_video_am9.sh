@@ -105,16 +105,16 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --image_aspect_ratio anyres_max_9 \
     --image_grid_pinpoints "'(1x1),...,(6x6)'" \
     --mm_patch_merge_type spatial_unpad \
-    --bf16 True \
+    --bf16 False \
     --run_name $MID_RUN_NAME \
     --output_dir ./work_dirs/$MID_RUN_NAME \
     --num_train_epochs 5 \
-    --per_device_train_batch_size 1 \
-    --per_device_eval_batch_size 1 \
-    --gradient_accumulation_steps 2 \
+    --per_device_train_batch_size 4 \
+    --per_device_eval_batch_size 4 \
+    --gradient_accumulation_steps 1 \
     --evaluation_strategy "steps" \
     --eval_steps 1000 \
-    --eval_dataset_size 64 \
+    --eval_dataset_size 128 \
     --save_strategy "steps" \
     --save_steps 500 \
     --save_total_limit 1 \
@@ -138,6 +138,8 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --mm_spatial_pool_stride 2 \
     --verbose_logging \
     --report_to tensorboard \
-    --attn_implementation "flash_attention_2"
+    --attn_implementation "flash_attention_2" \
+    --fp8 True \
+    --fp8_e4m3 True
 #    --force_sample False \
 exit 0;
