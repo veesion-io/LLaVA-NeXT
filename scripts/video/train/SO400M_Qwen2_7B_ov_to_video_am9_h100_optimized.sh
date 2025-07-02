@@ -6,16 +6,6 @@ source env/bin/activate
 export CPATH="/usr/local/cuda/include:$CPATH"
 
 # Set up the data folder
-# All video and track files should be downloaded from the scalable-training-dataset-us-east-1 S3 bucket
-# No local paths should be used for video/track files
-# JSON dataset should be downloaded from the original bucket
-#IMAGE_FOLDER="/ssd2/kchoi/experiments/DLT-138/Simone_28_one_video_one_label/videos/"
-#VIDEO_FOLDER="/ssd2/kchoi/experiments/DLT-138/Simone_28_one_video_one_label/videos/"
-#IMAGE_FOLDER="/home/veesion/gemini_engineering_subset/tracks_segments_resampled/"
-#VIDEO_FOLDER="/home/veesion/gemini_engineering_subset/tracks_segments_resampled/"
-#IMAGE_FOLDER="/home/veesion/gemini_engineering_subset/tracks_segments/"
-#VIDEO_FOLDER="/home/veesion/gemini_engineering_subset/tracks_segments/"
-# DATA_YAML="scripts/video/train/exp.yaml" # e.g exp.yaml
 mkdir -p data
 aws s3 cp s3://scalable-training-dataset/gemini_fine_tuning/32k/gemini_finetuning_subset_cheating_description.json data/gemini_finetuning_subset_cheating_description.json
 DATA_YAML="data/gemini_finetuning_subset_cheating_description.json"
@@ -47,14 +37,13 @@ LLM_VERSION="Qwen/Qwen2-7B-Instruct"
 LLM_VERSION_CLEAN="${LLM_VERSION//\//_}"
 VISION_MODEL_VERSION="google/siglip-so400m-patch14-384"
 VISION_MODEL_VERSION_CLEAN="${VISION_MODEL_VERSION//\//_}"
-#
 
 BASE_RUN_NAME="llavanext-google_siglip-so400m-patch14-384-Qwen_Qwen2-7B-Instruct-mlp2x_gelu-pretrain_blip558k_plain"
 echo "BASE_RUN_NAME: ${BASE_RUN_NAME}"
 
 # Stage 2
 PROMPT_VERSION="qwen_1_5"
-MID_RUN_NAME="llavanext-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-ov_to_video_am9"
+MID_RUN_NAME="llavanext-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-ov_to_video_am9_h100_flash"
 PREV_STAGE_CHECKPOINT="lmms-lab/llava-onevision-qwen2-0.5b-ov"
 echo "PREV_STAGE_CHECKPOINT: ${PREV_STAGE_CHECKPOINT}"
 echo "MID_RUN_NAME: ${MID_RUN_NAME}"
@@ -76,13 +65,6 @@ export PDSH_SSH_ARGS_APPEND="-o StrictHostKeyChecking=no"
 # Ensure .ssh directory exists
 mkdir -p ~/.ssh
 
-# deepspeed \
-#     --master_port 1234 \
-#     --num_nodes ${GPU_INSTANCES_NUMBER} \
-#     --node_rank ${NODE_RANK} \
-#     --num_gpus ${GPU_COUNT} \
-#     --master_addr ${MASTER_PRIVATE_IP} \
-#     --hostfile ~/hostfile \
 ACCELERATE_CPU_AFFINITY=1 torchrun \
     --nnodes="${GPU_INSTANCES_NUMBER}" \
     --node_rank="${NODE_RANK}" \
@@ -139,5 +121,5 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --verbose_logging \
     --report_to tensorboard \
     --attn_implementation "flash_attention_2"
-#    --force_sample False \
-exit 0;
+
+exit 0; 
