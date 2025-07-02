@@ -342,58 +342,100 @@ class LLaVATrainer(Trainer):
                                     video_tensor = inputs['images'] if i == 0 else None
                                 
                                 if video_tensor is not None:
-                                    # Use conversation template exactly like eval.py
+                                    # Replicate exact eval.py prompts and flow
                                     conv_template = "qwen_1_5"
                                     DESCRIPTION_PROMPT = """This is a retail shop video surveillance video.
 It has been cropped to follow a single person in its center.
 Is this person hiding a store item in their personal bag (not shopping cart / basket, or regular shopping bag, but personal, like handbag, backpack, etc) or clothes (jacket, trousers, pockets).
 Explain your reasoning."""
-                                    question = f"{DEFAULT_IMAGE_TOKEN}{DESCRIPTION_PROMPT}"
+                                    BODY_PROMPT = """Based on this answer only, quantify the probability that the person hides a store item in their clothes. Not a personal item or an irrelevant one, like a phone, wallet, cardboard. An actual store item.
+Answer with a number, a probability between 0.0 and 1.0, with as many decimals as you desire. Don't include any words. Just the number."""
+                                    BAG_PROMPT = """Same question but with the probability that the person puts a store item in their personal bag (not a shopping basket or regular shopping bag)."""
                                     
+                                    # Handle image sizes exactly like eval.py
+                                    if 'image_sizes' in inputs and inputs['image_sizes'] is not None:
+                                        if isinstance(inputs['image_sizes'], list) and len(inputs['image_sizes']) > i:
+                                            image_sizes = [inputs['image_sizes'][i]]
+                                        else:
+                                            image_sizes = [(1024, 576)]
+                                    else:
+                                        image_sizes = [(1024, 576)]
+                                    
+                                    # Prepare image_tensors exactly like eval.py
+                                    image_tensors = [video_tensor]
+                                    
+                                    # STEP 1: Generate description (exactly like eval.py)
+                                    question = f"{DEFAULT_IMAGE_TOKEN}{DESCRIPTION_PROMPT}"
                                     conv = copy.deepcopy(conv_templates[conv_template])
                                     conv.append_message(conv.roles[0], question)
                                     conv.append_message(conv.roles[1], None)
                                     prompt_question = conv.get_prompt()
                                     
-                                    # Tokenize the prompt exactly like eval.py
                                     input_ids = tokenizer_image_token(prompt_question, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
                                     
-                                    # Handle image sizes exactly like eval.py - get from original frame dimensions if available
-                                    if 'image_sizes' in inputs and inputs['image_sizes'] is not None:
-                                        if isinstance(inputs['image_sizes'], list) and len(inputs['image_sizes']) > i:
-                                            image_sizes = [inputs['image_sizes'][i]]
-                                        else:
-                                            # Default video frame size if not available
-                                            image_sizes = [(1024, 576)]  # Common surveillance video size
-                                    else:
-                                        image_sizes = [(1024, 576)]
-                                    
-                                    # Prepare image_tensors exactly like eval.py - wrap in list
-                                    image_tensors = [video_tensor]
-                                    
-                                    # Generate description using model.generate exactly like eval.py
                                     cont = model.generate(
                                         input_ids,
-                                        images=image_tensors,  # Pass as list like eval.py
+                                        images=image_tensors,
                                         image_sizes=image_sizes,
                                         do_sample=False,
                                         temperature=0,
                                         max_new_tokens=4096,
-                                        modalities=["video"],  # Fixed modality like eval.py
+                                        modalities=["video"],
                                     )
-                                    
-                                    # Decode the output exactly like eval.py
                                     text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
                                     description = text_outputs[0]
+                                    rank0_print(f"Step {self.state.global_step} - Video {i+1} Description: {description}")
                                     
-                                    if description:
-                                        rank0_print(f"Step {self.state.global_step} - Video {i+1} Description: {description}")
-                                    else:
-                                        rank0_print(f"Step {self.state.global_step} - Video {i+1} Description: [No description generated]")
+                                    # STEP 2: Generate body probability (exactly like eval.py)
+                                    conv = copy.deepcopy(conv_templates[conv_template])
+                                    conv.append_message(conv.roles[0], question)
+                                    conv.append_message(conv.roles[1], description)
+                                    conv.append_message(conv.roles[0], BODY_PROMPT)
+                                    prompt_question = conv.get_prompt()
+                                    
+                                    input_ids = tokenizer_image_token(prompt_question, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
+                                    
+                                    cont = model.generate(
+                                        input_ids,
+                                        images=image_tensors,
+                                        image_sizes=image_sizes,
+                                        do_sample=False,
+                                        temperature=0,
+                                        max_new_tokens=4096,
+                                        modalities=["video"],
+                                    )
+                                    text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
+                                    body = text_outputs[0]
+                                    rank0_print(f"Step {self.state.global_step} - Video {i+1} Body Probability: {body}")
+                                    
+                                    # STEP 3: Generate bag probability (exactly like eval.py)
+                                    conv = copy.deepcopy(conv_templates[conv_template])
+                                    conv.append_message(conv.roles[0], question)
+                                    conv.append_message(conv.roles[1], description)
+                                    conv.append_message(conv.roles[0], BODY_PROMPT)
+                                    conv.append_message(conv.roles[1], body)
+                                    conv.append_message(conv.roles[0], BAG_PROMPT)
+                                    prompt_question = conv.get_prompt()
+                                    
+                                    input_ids = tokenizer_image_token(prompt_question, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
+                                    
+                                    cont = model.generate(
+                                        input_ids,
+                                        images=image_tensors,
+                                        image_sizes=image_sizes,
+                                        do_sample=False,
+                                        temperature=0,
+                                        max_new_tokens=4096,
+                                        modalities=["video"],
+                                    )
+                                    text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
+                                    bag = text_outputs[0]
+                                    rank0_print(f"Step {self.state.global_step} - Video {i+1} Bag Probability: {bag}")
+                                    
                                 else:
-                                    rank0_print(f"Step {self.state.global_step} - Video {i+1} Description: [No video data]")
+                                    rank0_print(f"Step {self.state.global_step} - Video {i+1}: [No video data]")
                             except Exception as e:
-                                rank0_print(f"Step {self.state.global_step} - Video {i+1} Description Error: {e}")
+                                rank0_print(f"Step {self.state.global_step} - Video {i+1} Error: {e}")
                     else:
                         rank0_print(f"Step {self.state.global_step} - No video data available in current batch")
                 
