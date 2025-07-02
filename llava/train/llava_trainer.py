@@ -342,51 +342,47 @@ class LLaVATrainer(Trainer):
                                     video_tensor = inputs['images'] if i == 0 else None
                                 
                                 if video_tensor is not None:
-                                    # Use conversation template like in eval.py
-                                    conv_template = "qwen_1_5"  # Match eval.py
-                                    question = f"""{DEFAULT_IMAGE_TOKEN}This is a retail shop video surveillance video.
+                                    # Use conversation template exactly like eval.py
+                                    conv_template = "qwen_1_5"
+                                    DESCRIPTION_PROMPT = """This is a retail shop video surveillance video.
 It has been cropped to follow a single person in its center.
 Is this person hiding a store item in their personal bag (not shopping cart / basket, or regular shopping bag, but personal, like handbag, backpack, etc) or clothes (jacket, trousers, pockets).
 Explain your reasoning."""
+                                    question = f"{DEFAULT_IMAGE_TOKEN}{DESCRIPTION_PROMPT}"
                                     
                                     conv = copy.deepcopy(conv_templates[conv_template])
                                     conv.append_message(conv.roles[0], question)
                                     conv.append_message(conv.roles[1], None)
                                     prompt_question = conv.get_prompt()
                                     
-                                    # Tokenize the prompt like eval.py
+                                    # Tokenize the prompt exactly like eval.py
                                     input_ids = tokenizer_image_token(prompt_question, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
                                     
-                                    # Get image sizes like eval.py
+                                    # Handle image sizes exactly like eval.py - get from original frame dimensions if available
                                     if 'image_sizes' in inputs and inputs['image_sizes'] is not None:
                                         if isinstance(inputs['image_sizes'], list) and len(inputs['image_sizes']) > i:
                                             image_sizes = [inputs['image_sizes'][i]]
                                         else:
-                                            image_sizes = [tuple(video_tensor.shape[-2:]) if video_tensor.dim() >= 4 else (224, 224)]
+                                            # Default video frame size if not available
+                                            image_sizes = [(1024, 576)]  # Common surveillance video size
                                     else:
-                                        image_sizes = [tuple(video_tensor.shape[-2:]) if video_tensor.dim() >= 4 else (224, 224)]
+                                        image_sizes = [(1024, 576)]
                                     
-                                    # Get modalities like eval.py
-                                    if 'modalities' in inputs and inputs['modalities'] is not None:
-                                        if isinstance(inputs['modalities'], list) and len(inputs['modalities']) > i:
-                                            modalities = [inputs['modalities'][i]]
-                                        else:
-                                            modalities = ["video"]
-                                    else:
-                                        modalities = ["video"]
+                                    # Prepare image_tensors exactly like eval.py - wrap in list
+                                    image_tensors = [video_tensor]
                                     
                                     # Generate description using model.generate exactly like eval.py
                                     cont = model.generate(
                                         input_ids,
-                                        images=[video_tensor],
+                                        images=image_tensors,  # Pass as list like eval.py
                                         image_sizes=image_sizes,
-                                        modalities=modalities,
                                         do_sample=False,
                                         temperature=0,
-                                        max_new_tokens=4096,  # Match eval.py
+                                        max_new_tokens=4096,
+                                        modalities=["video"],  # Fixed modality like eval.py
                                     )
                                     
-                                    # Decode the output like eval.py
+                                    # Decode the output exactly like eval.py
                                     text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
                                     description = text_outputs[0]
                                     
