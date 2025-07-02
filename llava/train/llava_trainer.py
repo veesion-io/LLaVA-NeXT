@@ -344,7 +344,10 @@ class LLaVATrainer(Trainer):
                                 if video_tensor is not None:
                                     # Use conversation template like in eval.py
                                     conv_template = "qwen_1_5"  # Match eval.py
-                                    question = f"{DEFAULT_IMAGE_TOKEN}Describe this video in detail."
+                                    question = f"""{DEFAULT_IMAGE_TOKEN}This is a retail shop video surveillance video.
+It has been cropped to follow a single person in its center.
+Is this person hiding a store item in their personal bag (not shopping cart / basket, or regular shopping bag, but personal, like handbag, backpack, etc) or clothes (jacket, trousers, pockets).
+Explain your reasoning."""
                                     
                                     conv = copy.deepcopy(conv_templates[conv_template])
                                     conv.append_message(conv.roles[0], question)
