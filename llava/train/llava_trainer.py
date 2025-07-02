@@ -288,6 +288,15 @@ class LLaVATrainer(Trainer):
         self.accelerator = self.accelerator.prepare(
             self.accelerator,
         )     def training_step(self, model, inputs):
+        # Ensure inputs are in the correct dtype for bf16 training
+        if hasattr(self.args, 'bf16') and self.args.bf16:
+            # Cast image tensors to bfloat16 if they exist
+            if 'images' in inputs and inputs['images'] is not None:
+                if isinstance(inputs['images'], list):
+                    inputs['images'] = [img.to(dtype=torch.bfloat16) if img is not None and img.dtype != torch.bfloat16 else img for img in inputs['images']]
+                elif hasattr(inputs['images'], 'dtype') and inputs['images'].dtype != torch.bfloat16:
+                    inputs['images'] = inputs['images'].to(dtype=torch.bfloat16)
+        
         # Call the parent to get loss and outputs
         loss = super().training_step(model, inputs)
         
