@@ -287,7 +287,9 @@ class LLaVATrainer(Trainer):
         # post-process accelerator
         self.accelerator = self.accelerator.prepare(
             self.accelerator,
-        )     def training_step(self, model, inputs):
+        )
+
+    def training_step(self, model, inputs):
         # Ensure inputs are in the correct dtype for bf16 training
         if hasattr(self.args, 'bf16') and self.args.bf16:
             # Cast image tensors to bfloat16 if they exist
