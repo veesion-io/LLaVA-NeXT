@@ -302,7 +302,7 @@ class LLaVATrainer(Trainer):
         loss = super().training_step(model, inputs)
         
         # Generate proper video descriptions like eval.py
-        if self.state.global_step % 5 == 0:  # Log every 5 steps for more frequent updates
+        if self.state.global_step % 10 == 0:  # Log every 10 steps for cleaner output
             try:
                 model.eval()
                 with torch.no_grad():
@@ -312,8 +312,8 @@ class LLaVATrainer(Trainer):
                         from llava.conversation import conv_templates
                         import copy
                         
-                        # Process first 2 videos in batch
-                        for i in range(min(2, len(inputs['images']) if isinstance(inputs['images'], list) else 1)):
+                        # Process only first video in batch
+                        for i in range(min(1, len(inputs['images']) if isinstance(inputs['images'], list) else 1)):
                             # Show ground truth first
                             if 'labels' in inputs and inputs['labels'] is not None:
                                 try:
