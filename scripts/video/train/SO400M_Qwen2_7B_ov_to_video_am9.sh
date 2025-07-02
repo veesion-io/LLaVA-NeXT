@@ -125,13 +125,13 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --logging_steps 10 \
     --optim "adamw_torch_fused" \
     --tf32 False \
-    --model_max_length 16384 \
+    --model_max_length 32768 \
     --gradient_checkpointing True \
     --dataloader_num_workers 16 \
     --lazy_preprocess True \
     --torch_compile False \
     --dataloader_drop_last True \
-    --frames_upbound 20 \
+    --frames_upbound 40 \
     --video_fps 5 \
     --mm_newline_position grid \
     --add_time_instruction True \
