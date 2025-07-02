@@ -10,15 +10,7 @@
     "bf16": {
         "enabled": true
     },
-    "fp8": {
-        "enabled": false,
-        "auto_cast": false,
-        "loss_scale": 0,
-        "initial_scale_power": 16,
-        "loss_scale_window": 1000,
-        "hysteresis": 2,
-        "min_loss_scale": 1
-    },
+
     "optimizer": {
         "type": "AdamW",
         "params": {
@@ -39,10 +31,11 @@
         },
         "allgather_partitions": true,
         "allgather_bucket_size": 2e8,
-        "overlap_comm": false,
+        "overlap_comm": true,
         "reduce_scatter": true,
         "reduce_bucket_size": 2e8,
-        "contiguous_gradients": true
+        "contiguous_gradients": true,
+        "sub_group_size": 1e9
     },
     "gradient_accumulation_steps": "auto",
     "gradient_clipping": "auto",
