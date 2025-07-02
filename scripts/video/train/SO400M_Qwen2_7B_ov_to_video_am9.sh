@@ -1,4 +1,9 @@
 #!/bin/bash
+set -x
+
+source env/bin/activate
+
+export CPATH="/usr/local/cuda/include:$CPATH"
 
 # Set up the data folder
 # All video and track files should be downloaded from the scalable-training-dataset-us-east-1 S3 bucket
@@ -85,7 +90,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --master_addr="${MASTER_PRIVATE_IP}" \
     --master_port=1234 \
   llava/train/train_mem.py \
-    --deepspeed scripts/zero2.json \
+    --deepspeed scripts/zero3.json \
     --model_name_or_path $PREV_STAGE_CHECKPOINT \
     --version $PROMPT_VERSION \
     --data_path $DATA_YAML \
@@ -104,8 +109,8 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --run_name $MID_RUN_NAME \
     --output_dir ./work_dirs/$MID_RUN_NAME \
     --num_train_epochs 5 \
-    --per_device_train_batch_size 6 \
-    --per_device_eval_batch_size 6 \
+    --per_device_train_batch_size 5 \
+    --per_device_eval_batch_size 5 \
     --gradient_accumulation_steps 1 \
     --evaluation_strategy "steps" \
     --eval_steps 500 \

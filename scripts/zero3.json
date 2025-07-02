@@ -10,7 +10,24 @@
     "bf16": {
         "enabled": "auto"
     },
-
+    "fp8": {
+        "enabled": true,
+        "auto_cast": true,
+        "loss_scale": 0,
+        "initial_scale_power": 16,
+        "loss_scale_window": 1000,
+        "hysteresis": 2,
+        "min_loss_scale": 1
+    },
+    "optimizer": {
+        "type": "AdamW",
+        "params": {
+            "lr": "auto",
+            "betas": "auto",
+            "eps": "auto",
+            "weight_decay": "auto"
+        }
+    },
     "zero_optimization": {
         "stage": 3,
         "offload_optimizer": {
@@ -29,13 +46,13 @@
         "stage3_param_persistence_threshold": "auto",
         "stage3_max_live_parameters": 1e9,
         "stage3_max_reuse_distance": 1e9,
-        "stage3_gather_16bit_weights_on_model_save": true
+        "gather_16bit_weights_on_model_save": true
     },
-
     "gradient_accumulation_steps": "auto",
     "gradient_clipping": "auto",
-    "steps_per_print": 100,
+    "steps_per_print": 10,
     "train_batch_size": "auto",
     "train_micro_batch_size_per_gpu": "auto",
-    "wall_clock_breakdown": false
+    "wall_clock_breakdown": false,
+    "zero_allow_untested_optimizer": true
 }
