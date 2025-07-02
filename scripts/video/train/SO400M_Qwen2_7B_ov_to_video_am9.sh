@@ -105,7 +105,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --image_aspect_ratio anyres_max_9 \
     --image_grid_pinpoints "'(1x1),...,(6x6)'" \
     --mm_patch_merge_type spatial_unpad \
-    --bf16 False \
+    --bf16 True \
     --run_name $MID_RUN_NAME \
     --output_dir ./work_dirs/$MID_RUN_NAME \
     --num_train_epochs 5 \
@@ -138,8 +138,6 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --mm_spatial_pool_stride 2 \
     --verbose_logging \
     --report_to tensorboard \
-    --attn_implementation "flash_attention_2" \
-    --fp8 True \
-    --fp8_e4m3 True
+    --attn_implementation "flash_attention_2"
 #    --force_sample False \
 exit 0;
