@@ -37,6 +37,14 @@ export NCCL_NET_GDR_LEVEL=2  # Enhanced GPU Direct RDMA for H100
 export NCCL_P2P_LEVEL=NVL    # NVLink for P5en instances
 export NCCL_NVLS_ENABLE=1    # Enable NVLink SHARP for H100
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
+
+# Torch Inductor optimization settings for H100
+export TORCH_INDUCTOR_CACHE_DIR="/tmp/inductor_cache"
+export TORCHINDUCTOR_CACHE_DIR="/tmp/inductor_cache"
+export TORCH_COMPILE_DEBUG=0
+export TORCHINDUCTOR_FX_GRAPH_CACHE=1
+export TORCHINDUCTOR_COORDINATE_DESCENT_TUNING=1
+export TORCHINDUCTOR_MAX_AUTOTUNE=1
 ############### Show Envs ####################
 
 nvidia-smi
@@ -129,7 +137,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --gradient_checkpointing True \
     --dataloader_num_workers 16 \
     --lazy_preprocess True \
-    --torch_compile False \
+    --torch_compile True \
     --dataloader_drop_last True \
     --frames_upbound 40 \
     --video_fps 5 \
