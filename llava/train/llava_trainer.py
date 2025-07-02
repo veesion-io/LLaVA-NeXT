@@ -302,17 +302,36 @@ class LLaVATrainer(Trainer):
         loss = super().training_step(model, inputs)
         
         # Generate proper video descriptions like eval.py
-        if self.state.global_step % 10 == 0:  # Only log every 10 steps
+        if self.state.global_step % 5 == 0:  # Log every 5 steps for more frequent updates
             try:
                 model.eval()
                 with torch.no_grad():
-                    # Process videos like in eval.py
                     if 'images' in inputs and inputs['images'] is not None:
                         from llava.constants import DEFAULT_IMAGE_TOKEN, IMAGE_TOKEN_INDEX
                         from llava.mm_utils import tokenizer_image_token
                         
                         # Process first 2 videos in batch
                         for i in range(min(2, len(inputs['images']) if isinstance(inputs['images'], list) else 1)):
+                            # Show ground truth first
+                            if 'labels' in inputs and inputs['labels'] is not None:
+                                try:
+                                    if isinstance(inputs['labels'], list):
+                                        gt_tokens = inputs['labels'][i]
+                                    else:
+                                        gt_tokens = inputs['labels'][i] if inputs['labels'].dim() > 1 else inputs['labels']
+                                    
+                                    valid_tokens = gt_tokens[gt_tokens != -100]
+                                    if len(valid_tokens) > 0:
+                                        gt_text = self.tokenizer.decode(valid_tokens, skip_special_tokens=True).strip()
+                                        # Clean up ground truth
+                                        for marker in ["Describe this video in detail.", "USER:", "ASSISTANT:"]:
+                                            if marker in gt_text:
+                                                gt_text = gt_text.split(marker)[-1].strip()
+                                        rank0_print(f"Step {self.state.global_step} - Video {i+1} GROUND TRUTH: {gt_text}")
+                                    else:
+                                        rank0_print(f"Step {self.state.global_step} - Video {i+1} GROUND TRUTH: [No valid tokens]")
+                                except Exception as e:
+                                    rank0_print(f"Step {self.state.global_step} - Video {i+1} GROUND TRUTH ERROR: {e}")
                             try:
                                 if isinstance(inputs['images'], list):
                                     video_tensor = inputs['images'][i] if inputs['images'][i] is not None else None
@@ -351,8 +370,8 @@ class LLaVATrainer(Trainer):
                                         image_sizes=image_sizes,
                                         modalities=modalities,
                                         do_sample=False,
-                                        temperature=0.0,
-                                        max_new_tokens=100,
+                                        temperature=0,
+                                        max_new_tokens=512,
                                         pad_token_id=self.tokenizer.pad_token_id,
                                         eos_token_id=self.tokenizer.eos_token_id,
                                     )
@@ -365,9 +384,6 @@ class LLaVATrainer(Trainer):
                                     description = description.replace(prompt, "").strip()
                                     
                                     if description:
-                                        # Truncate long descriptions
-                                        if len(description) > 150:
-                                            description = description[:150] + "..."
                                         rank0_print(f"Step {self.state.global_step} - Video {i+1} Description: {description}")
                                     else:
                                         rank0_print(f"Step {self.state.global_step} - Video {i+1} Description: [No description generated]")
