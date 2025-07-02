@@ -92,16 +92,16 @@ class S3File(io.RawIOBase):
     def get(self, range_header: str) -> bytes:
         if range_header in self.cache:
             return self.cache[range_header]
-        res = self.s3_object.get(Range=range_header)
+            res = self.s3_object.get(Range=range_header)
         self.cache[range_header] = data = res['Body'].read()
-        return data
+            return data
 
 
 def download_from_s3(s3, bucket: Bucket, key: Path, seekable: bool = False
                      ) -> S3File:
     obj = s3.Object(bucket_name=bucket, key=str(key))
-    if seekable:
-        return S3File(obj)
+        if seekable:
+            return S3File(obj)
     return obj.get()['Body']
 
 
