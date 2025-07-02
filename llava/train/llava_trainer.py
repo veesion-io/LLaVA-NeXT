@@ -309,6 +309,8 @@ class LLaVATrainer(Trainer):
                     if 'images' in inputs and inputs['images'] is not None:
                         from llava.constants import DEFAULT_IMAGE_TOKEN, IMAGE_TOKEN_INDEX
                         from llava.mm_utils import tokenizer_image_token
+                        from llava.conversation import conv_templates
+                        import copy
                         
                         # Process first 2 videos in batch
                         for i in range(min(2, len(inputs['images']) if isinstance(inputs['images'], list) else 1)):
@@ -332,6 +334,7 @@ class LLaVATrainer(Trainer):
                                         rank0_print(f"Step {self.state.global_step} - Video {i+1} GROUND TRUTH: [No valid tokens]")
                                 except Exception as e:
                                     rank0_print(f"Step {self.state.global_step} - Video {i+1} GROUND TRUTH ERROR: {e}")
+                            
                             try:
                                 if isinstance(inputs['images'], list):
                                     video_tensor = inputs['images'][i] if inputs['images'][i] is not None else None
@@ -339,13 +342,19 @@ class LLaVATrainer(Trainer):
                                     video_tensor = inputs['images'] if i == 0 else None
                                 
                                 if video_tensor is not None:
-                                    # Create description prompt like in eval.py
-                                    prompt = f"{DEFAULT_IMAGE_TOKEN}Describe this video in detail."
+                                    # Use conversation template like in eval.py
+                                    conv_template = "qwen_1_5"  # Match eval.py
+                                    question = f"{DEFAULT_IMAGE_TOKEN}Describe this video in detail."
                                     
-                                    # Tokenize the prompt
-                                    input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
+                                    conv = copy.deepcopy(conv_templates[conv_template])
+                                    conv.append_message(conv.roles[0], question)
+                                    conv.append_message(conv.roles[1], None)
+                                    prompt_question = conv.get_prompt()
                                     
-                                    # Get image sizes
+                                    # Tokenize the prompt like eval.py
+                                    input_ids = tokenizer_image_token(prompt_question, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
+                                    
+                                    # Get image sizes like eval.py
                                     if 'image_sizes' in inputs and inputs['image_sizes'] is not None:
                                         if isinstance(inputs['image_sizes'], list) and len(inputs['image_sizes']) > i:
                                             image_sizes = [inputs['image_sizes'][i]]
@@ -354,7 +363,7 @@ class LLaVATrainer(Trainer):
                                     else:
                                         image_sizes = [tuple(video_tensor.shape[-2:]) if video_tensor.dim() >= 4 else (224, 224)]
                                     
-                                    # Get modalities
+                                    # Get modalities like eval.py
                                     if 'modalities' in inputs and inputs['modalities'] is not None:
                                         if isinstance(inputs['modalities'], list) and len(inputs['modalities']) > i:
                                             modalities = [inputs['modalities'][i]]
@@ -363,7 +372,7 @@ class LLaVATrainer(Trainer):
                                     else:
                                         modalities = ["video"]
                                     
-                                    # Generate description using model.generate like eval.py
+                                    # Generate description using model.generate exactly like eval.py
                                     cont = model.generate(
                                         input_ids,
                                         images=[video_tensor],
@@ -371,17 +380,12 @@ class LLaVATrainer(Trainer):
                                         modalities=modalities,
                                         do_sample=False,
                                         temperature=0,
-                                        max_new_tokens=512,
-                                        pad_token_id=self.tokenizer.pad_token_id,
-                                        eos_token_id=self.tokenizer.eos_token_id,
+                                        max_new_tokens=4096,  # Match eval.py
                                     )
                                     
                                     # Decode the output like eval.py
                                     text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
                                     description = text_outputs[0]
-                                    
-                                    # Remove the input prompt from the output like eval.py
-                                    description = description.replace(prompt, "").strip()
                                     
                                     if description:
                                         rank0_print(f"Step {self.state.global_step} - Video {i+1} Description: {description}")
