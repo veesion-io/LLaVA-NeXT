@@ -231,6 +231,7 @@ class TrainingArguments(transformers.TrainingArguments):
     attn_implementation: str = field(default="flash_attention_2", metadata={"help": "Use transformers attention implementation."})
     fp8: bool = field(default=False, metadata={"help": "Enable FP8 training."})
     fp8_e4m3: bool = field(default=False, metadata={"help": "Use E4M3 format for FP8 training."})
+    eval_dataset_size: Optional[int] = field(default=None, metadata={"help": "Size of the evaluation dataset. If provided, will use a subset for faster evaluation."})
 
 
 # @dataclass
@@ -1430,12 +1431,20 @@ class DataCollatorForSupervisedDataset(object):
         return batch
 
 
-def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args) -> Dict:
+def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args, training_args=None) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
     # train_dataset = LazySupervisedDataset(tokenizer=tokenizer, data_path=data_args.data_path, data_args=data_args)
     dataset = TrackSegmentDataset(tokenizer=tokenizer, data_path=data_args.data_path, data_args=data_args)
     generator = torch.Generator().manual_seed(42)
     train_dataset, eval_dataset = random_split(dataset, [0.8, 0.2], generator=generator)
+    
+    # Limit evaluation dataset size if specified
+    if training_args and training_args.eval_dataset_size is not None:
+        eval_size = min(training_args.eval_dataset_size, len(eval_dataset))
+        eval_indices = list(range(eval_size))
+        eval_dataset = Subset(eval_dataset, eval_indices)
+        rank0_print(f"Limited evaluation dataset to {eval_size} samples for faster evaluation")
+    
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     return dict(train_dataset=LLaVASubset(train_dataset),
                 eval_dataset=LLaVASubset(eval_dataset),
@@ -1841,7 +1850,7 @@ def train(attn_implementation=None):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
 
-    data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
+    data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args, training_args=training_args)
     # Create custom callbacks for selective logging and performance optimization
     custom_callbacks = [
         S3UploadCallback(),

@@ -114,6 +114,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --gradient_accumulation_steps 1 \
     --evaluation_strategy "steps" \
     --eval_steps 1000 \
+    --eval_dataset_size 128 \
     --save_strategy "steps" \
     --save_steps 500 \
     --save_total_limit 1 \
