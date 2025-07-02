@@ -292,77 +292,98 @@ class LLaVATrainer(Trainer):
     def training_step(self, model, inputs):
         # Ensure inputs are in the correct dtype for bf16 training
         if hasattr(self.args, 'bf16') and self.args.bf16:
-            # Cast image tensors to bfloat16 if they exist
             if 'images' in inputs and inputs['images'] is not None:
                 if isinstance(inputs['images'], list):
-                    inputs['images'] = [img.to(dtype=torch.bfloat16) if img is not None and img.dtype != torch.bfloat16 else img for img in inputs['images']]
-                elif hasattr(inputs['images'], 'dtype') and inputs['images'].dtype != torch.bfloat16:
+                    inputs['images'] = [img.to(dtype=torch.bfloat16) if img is not None else None for img in inputs['images']]
+                else:
                     inputs['images'] = inputs['images'].to(dtype=torch.bfloat16)
         
         # Call the parent to get loss and outputs
         loss = super().training_step(model, inputs)
         
-        # Try to generate actual video descriptions (proper inference)
+        # Generate proper video descriptions like eval.py
         if self.state.global_step % 10 == 0:  # Only log every 10 steps
             try:
-                # Generate proper descriptions using the model's generate method
                 model.eval()
                 with torch.no_grad():
-                    # Extract the first sample from the batch for generation
+                    # Process videos like in eval.py
                     if 'images' in inputs and inputs['images'] is not None:
-                        batch_size = len(inputs['images']) if isinstance(inputs['images'], list) else inputs['images'].shape[0]
+                        from llava.constants import DEFAULT_IMAGE_TOKEN, IMAGE_TOKEN_INDEX
+                        from llava.mm_utils import tokenizer_image_token
                         
-                        for i in range(min(1, batch_size)):  # Only generate for first sample
-                            # Create a simple prompt for video description
-                            from llava.constants import DEFAULT_IMAGE_TOKEN
-                            prompt = f"{DEFAULT_IMAGE_TOKEN}Describe this video in detail."
-                            
-                            # Tokenize the prompt
-                            from llava.mm_utils import tokenizer_image_token
-                            from llava.constants import IMAGE_TOKEN_INDEX
-                            input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
-                            
-                            # Prepare images for generation
-                            if isinstance(inputs['images'], list):
-                                images = [inputs['images'][i]]
-                            else:
-                                images = [inputs['images'][i:i+1]]
-                            
-                            # Generate description using proper inference
-                            gen_outputs = model.generate(
-                                input_ids,
-                                images=images,
-                                image_sizes=inputs.get('image_sizes', [None]),
-                                modalities=inputs.get('modalities', ['video']),
-                                do_sample=False,
-                                temperature=0.0,
-                                max_new_tokens=50,
-                                pad_token_id=self.tokenizer.pad_token_id,
-                                eos_token_id=self.tokenizer.eos_token_id,
-                                use_cache=True,
-                            )
-                            
-                            # Decode the generated output
-                            generated_text = self.tokenizer.batch_decode(gen_outputs, skip_special_tokens=True)[0]
-                            # Remove the input prompt from the output
-                            description = generated_text.replace(prompt, "").strip()
-                            
-                            if description:
-                                # Truncate long descriptions
-                                if len(description) > 100:
-                                    description = description[:100] + "..."
-                                rank0_print(f"Step {self.state.global_step} - Video {i+1} Generated: {description}")
-                            else:
-                                rank0_print(f"Step {self.state.global_step} - Video {i+1} Generated: [No description generated]")
+                        # Process first 2 videos in batch
+                        for i in range(min(2, len(inputs['images']) if isinstance(inputs['images'], list) else 1)):
+                            try:
+                                if isinstance(inputs['images'], list):
+                                    video_tensor = inputs['images'][i] if inputs['images'][i] is not None else None
+                                else:
+                                    video_tensor = inputs['images'] if i == 0 else None
+                                
+                                if video_tensor is not None:
+                                    # Create description prompt like in eval.py
+                                    prompt = f"{DEFAULT_IMAGE_TOKEN}Describe this video in detail."
+                                    
+                                    # Tokenize the prompt
+                                    input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
+                                    
+                                    # Get image sizes
+                                    if 'image_sizes' in inputs and inputs['image_sizes'] is not None:
+                                        if isinstance(inputs['image_sizes'], list) and len(inputs['image_sizes']) > i:
+                                            image_sizes = [inputs['image_sizes'][i]]
+                                        else:
+                                            image_sizes = [tuple(video_tensor.shape[-2:]) if video_tensor.dim() >= 4 else (224, 224)]
+                                    else:
+                                        image_sizes = [tuple(video_tensor.shape[-2:]) if video_tensor.dim() >= 4 else (224, 224)]
+                                    
+                                    # Get modalities
+                                    if 'modalities' in inputs and inputs['modalities'] is not None:
+                                        if isinstance(inputs['modalities'], list) and len(inputs['modalities']) > i:
+                                            modalities = [inputs['modalities'][i]]
+                                        else:
+                                            modalities = ["video"]
+                                    else:
+                                        modalities = ["video"]
+                                    
+                                    # Generate description using model.generate like eval.py
+                                    cont = model.generate(
+                                        input_ids,
+                                        images=[video_tensor],
+                                        image_sizes=image_sizes,
+                                        modalities=modalities,
+                                        do_sample=False,
+                                        temperature=0.0,
+                                        max_new_tokens=100,
+                                        pad_token_id=self.tokenizer.pad_token_id,
+                                        eos_token_id=self.tokenizer.eos_token_id,
+                                    )
+                                    
+                                    # Decode the output like eval.py
+                                    text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
+                                    description = text_outputs[0]
+                                    
+                                    # Remove the input prompt from the output like eval.py
+                                    description = description.replace(prompt, "").strip()
+                                    
+                                    if description:
+                                        # Truncate long descriptions
+                                        if len(description) > 150:
+                                            description = description[:150] + "..."
+                                        rank0_print(f"Step {self.state.global_step} - Video {i+1} Description: {description}")
+                                    else:
+                                        rank0_print(f"Step {self.state.global_step} - Video {i+1} Description: [No description generated]")
+                                else:
+                                    rank0_print(f"Step {self.state.global_step} - Video {i+1} Description: [No video data]")
+                            except Exception as e:
+                                rank0_print(f"Step {self.state.global_step} - Video {i+1} Description Error: {e}")
                     else:
-                        rank0_print(f"Step {self.state.global_step} - No video data available for description generation")
+                        rank0_print(f"Step {self.state.global_step} - No video data available in current batch")
                 
                 model.train()
             except Exception as e:
                 import traceback
                 rank0_print(f"Step {self.state.global_step} - Error generating video descriptions: {e}")
                 rank0_print(f"Traceback: {traceback.format_exc()}")
-                model.train()  # Ensure model is back in training mode
+        
         return loss
 
     def create_accelerator_and_postprocess(self):
