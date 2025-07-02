@@ -1038,7 +1038,20 @@ class LLaVASubset(Subset):
     def __init__(self, subset: Subset):
         self.dataset = subset.dataset
         self.indices = subset.indices
-        self.list_data_dict = self.dataset.list_data_dict
+        
+        # Handle nested subsets - find the root dataset with list_data_dict
+        root_dataset = subset.dataset
+        while hasattr(root_dataset, 'dataset') and not hasattr(root_dataset, 'list_data_dict'):
+            root_dataset = root_dataset.dataset
+        
+        if hasattr(root_dataset, 'list_data_dict'):
+            self.list_data_dict = root_dataset.list_data_dict
+        else:
+            # Fallback: try to get from the immediate dataset
+            if hasattr(subset.dataset, 'list_data_dict'):
+                self.list_data_dict = subset.dataset.list_data_dict
+            else:
+                raise AttributeError(f"Cannot find list_data_dict in dataset hierarchy for {type(subset.dataset)}")
 
     @property
     def modality_lengths(self):
