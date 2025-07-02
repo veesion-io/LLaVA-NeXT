@@ -17,6 +17,7 @@
 import ast
 import os
 import copy
+from copy import deepcopy
 from dataclasses import dataclass, field
 import json
 import logging
@@ -230,8 +231,6 @@ class TrainingArguments(transformers.TrainingArguments):
     attn_implementation: str = field(default="flash_attention_2", metadata={"help": "Use transformers attention implementation."})
     fp8: bool = field(default=False, metadata={"help": "Enable FP8 training."})
     fp8_e4m3: bool = field(default=False, metadata={"help": "Use E4M3 format for FP8 training."})
-    eval_dataset_size: int = field(default=1024, metadata={"help": "Number of samples to use for evaluation."})
-
 
 
 # @dataclass
@@ -1433,49 +1432,14 @@ class DataCollatorForSupervisedDataset(object):
 
 def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
-    dataset_cls = LazySupervisedDataset if data_args.lazy_preprocess else LazySupervisedDataset
-    rank0_print("Loading data...")
-
-    train_dataset = dataset_cls(
-        data_args.data_path,
-        tokenizer=tokenizer,
-        data_args=data_args,
-    )
-    # NOTE: add a dummy eval dataset to pass the test
-    eval_dataset = deepcopy(train_dataset)
-
-    # train_dataset = eval_dataset = dataset_cls(data_args.data_path,
-    #                                 tokenizer=tokenizer,
-    #                                 data_args=data_args)
+    # train_dataset = LazySupervisedDataset(tokenizer=tokenizer, data_path=data_args.data_path, data_args=data_args)
+    dataset = TrackSegmentDataset(tokenizer=tokenizer, data_path=data_args.data_path, data_args=data_args)
+    generator = torch.Generator().manual_seed(42)
+    train_dataset, eval_dataset = random_split(dataset, [0.8, 0.2], generator=generator)
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
-
-    # Split the dataset into training and evaluation sets
-    if "train" in data_args.data_path and "val" not in data_args.data_path:
-        # train_dataset, eval_dataset = random_split(
-        #     dataset,
-        #     [int(len(dataset) * 0.95), int(len(dataset) * 0.05)],
-        #     generator=torch.Generator().manual_seed(42),
-        # )
-        # eval_dataset = Subset(dataset, range(100))
-        # train_dataset = Subset(dataset, range(len(dataset) - 100))
-        eval_split_size = 4096
-        train_dataset = Subset(train_dataset, range(eval_split_size, len(train_dataset)))
-        eval_dataset = Subset(eval_dataset, range(eval_split_size))
-    else:
-        # eval_dataset = dataset_cls(
-        #     data_args.eval_data_path, tokenizer=tokenizer, data_args=data_args
-        # )
-        pass
-
-    if data_args.eval_dataset_size:
-        rank0_print(f"Using {data_args.eval_dataset_size} samples for evaluation.")
-        eval_dataset = Subset(eval_dataset, range(data_args.eval_dataset_size))
-
-    return dict(
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        data_collator=data_collator,
-    )
+    return dict(train_dataset=LLaVASubset(train_dataset),
+                eval_dataset=LLaVASubset(eval_dataset),
+                data_collator=data_collator)
 
 
 def get_model(model_args, training_args, bnb_model_from_pretrained_args):
