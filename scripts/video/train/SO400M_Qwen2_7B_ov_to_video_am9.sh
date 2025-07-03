@@ -135,7 +135,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --tf32 False \
     --model_max_length 32768 \
     --gradient_checkpointing True \
-    --dataloader_num_workers 16 \
+    --dataloader_num_workers 8 \
     --lazy_preprocess True \
     --torch_compile True \
     --dataloader_drop_last True \

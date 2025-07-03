@@ -348,9 +348,6 @@ class LLaVATrainer(Trainer):
 It has been cropped to follow a single person in its center.
 Is this person hiding a store item in their personal bag (not shopping cart / basket, or regular shopping bag, but personal, like handbag, backpack, etc) or clothes (jacket, trousers, pockets).
 Explain your reasoning."""
-                                BODY_PROMPT = """Based on this answer only, quantify the probability that the person hides a store item in their clothes. Not a personal item or an irrelevant one, like a phone, wallet, cardboard. An actual store item.
-Answer with a number, a probability between 0.0 and 1.0, with as many decimals as you desire. Don't include any words. Just the number."""
-                                BAG_PROMPT = """Same question but with the probability that the person puts a store item in their personal bag (not a shopping basket or regular shopping bag)."""
                                 
                                 # Handle image sizes exactly like eval.py
                                 if 'image_sizes' in inputs and inputs['image_sizes'] is not None:
@@ -386,52 +383,6 @@ Answer with a number, a probability between 0.0 and 1.0, with as many decimals a
                                 description = text_outputs[0]
                                 rank0_print(f"Step {self.state.global_step} - Description: {description}")
                                 
-                                # STEP 2: Generate body probability (exactly like eval.py)
-                                conv = copy.deepcopy(conv_templates[conv_template])
-                                conv.append_message(conv.roles[0], question)
-                                conv.append_message(conv.roles[1], description)
-                                conv.append_message(conv.roles[0], BODY_PROMPT)
-                                prompt_question = conv.get_prompt()
-                                
-                                input_ids = tokenizer_image_token(prompt_question, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
-                                
-                                cont = model.generate(
-                                    input_ids,
-                                    images=image_tensors,
-                                    image_sizes=image_sizes,
-                                    do_sample=False,
-                                    temperature=0,
-                                    max_new_tokens=4096,
-                                    modalities=["video"],
-                                )
-                                text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
-                                body = text_outputs[0]
-                                rank0_print(f"Step {self.state.global_step} - Body Probability: {body}")
-                                
-                                # STEP 3: Generate bag probability (exactly like eval.py)
-                                conv = copy.deepcopy(conv_templates[conv_template])
-                                conv.append_message(conv.roles[0], question)
-                                conv.append_message(conv.roles[1], description)
-                                conv.append_message(conv.roles[0], BODY_PROMPT)
-                                conv.append_message(conv.roles[1], body)
-                                conv.append_message(conv.roles[0], BAG_PROMPT)
-                                prompt_question = conv.get_prompt()
-                                
-                                input_ids = tokenizer_image_token(prompt_question, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
-                                
-                                cont = model.generate(
-                                    input_ids,
-                                    images=image_tensors,
-                                    image_sizes=image_sizes,
-                                    do_sample=False,
-                                    temperature=0,
-                                    max_new_tokens=4096,
-                                    modalities=["video"],
-                                )
-                                text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
-                                bag = text_outputs[0]
-                                rank0_print(f"Step {self.state.global_step} - Bag Probability: {bag}")
-                                
                             else:
                                 rank0_print(f"Step {self.state.global_step} - No video data available")
                         except Exception as e:
@@ -446,6 +397,39 @@ Answer with a number, a probability between 0.0 and 1.0, with as many decimals a
                 rank0_print(f"Traceback: {traceback.format_exc()}")
         
         return loss
+
+    def train(self, *args, **kwargs):
+        if self.args.resume_from_run_name:
+            import boto3
+            from pathlib import Path
+
+            s3 = boto3.resource('s3')
+            bucket = s3.Bucket('scalable-training-dataset')
+            prefix = f"training_checkpoints/{self.args.resume_from_run_name}/"
+
+            checkpoints = [
+                obj.key for obj in bucket.objects.filter(Prefix=prefix)
+                if 'checkpoint-' in obj.key and 'pytorch_model.bin' in obj.key
+            ]
+            
+            if not checkpoints:
+                raise ValueError(f"No checkpoints found for run: {self.args.resume_from_run_name}")
+
+            latest_checkpoint_path = sorted(checkpoints)[-1]
+            checkpoint_name = Path(latest_checkpoint_path).parent.name
+            local_checkpoint_dir = Path(self.args.output_dir) / checkpoint_name
+            
+            print(f"Resuming from {latest_checkpoint_path}")
+            
+            for obj in bucket.objects.filter(Prefix=str(Path(latest_checkpoint_path).parent)):
+                local_path = local_checkpoint_dir / Path(obj.key).name
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                print(f"Downloading {obj.key} to {local_path}")
+                bucket.download_file(obj.key, str(local_path))
+            
+            kwargs['resume_from_checkpoint'] = str(local_checkpoint_dir)
+
+        super().train(*args, **kwargs)
 
     def create_accelerator_and_postprocess(self):
         grad_acc_kwargs = {"num_steps": self.args.gradient_accumulation_steps}

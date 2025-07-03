@@ -64,7 +64,7 @@ class S3UploadCallback(TrainerCallback):
     def on_init_end(self, args, state, control, **kwargs):
         self.client = boto3.client('s3')
         self.bucket = 'scalable-training-dataset'
-        name = Path(args.output_dir).absolute().parent.parent.name
+        name = Path(args.output_dir).name
         self.prefix = Path('training_checkpoints') / name
         self.tensorboard_prefix = Path('tensorboard_logs') / name
         self.last_upload_time = time.time()
@@ -72,12 +72,14 @@ class S3UploadCallback(TrainerCallback):
 
     def on_save(self, args, state, control, **kwargs):
         start = time.time()
-        # Upload checkpoints
-        for file in Path(args.output_dir).glob('**/*'):
-            if file.is_file():
-                prefix = str(self.prefix / file)
-                rank0_print(f"saving {file} to s3://{self.bucket}/{prefix}")
-                self.client.upload_file(file, self.bucket, prefix)
+        output_dir_path = Path(args.output_dir)
+        # Upload checkpoints, but not tensorboard logs
+        for file_path in output_dir_path.glob('**/*'):
+            if file_path.is_file() and 'runs' not in file_path.parts:
+                relative_path = file_path.relative_to(output_dir_path)
+                s3_key = str(self.prefix / relative_path)
+                rank0_print(f"saving checkpoint file {file_path} to s3://{self.bucket}/{s3_key}")
+                self.client.upload_file(str(file_path), self.bucket, s3_key)
         
         # Upload TensorBoard logs
         self._upload_tensorboard_logs(args)
@@ -232,6 +234,7 @@ class TrainingArguments(transformers.TrainingArguments):
     fp8: bool = field(default=False, metadata={"help": "Enable FP8 training."})
     fp8_e4m3: bool = field(default=False, metadata={"help": "Use E4M3 format for FP8 training."})
     eval_dataset_size: Optional[int] = field(default=None, metadata={"help": "Size of the evaluation dataset. If provided, will use a subset for faster evaluation."})
+    resume_from_run_name: Optional[str] = field(default=None, metadata={"help": "The name of the run to resume from."})
 
 
 # @dataclass
@@ -1079,35 +1082,42 @@ class TrackSegmentDataset(Dataset):
         return modality_lengths(self)
 
     def __getitem__(self, i):
-        data = self.list_data_dict[i]
-        start, end = timespan = data['timespan']
-        frame_batch = load_video_track_segment(
-            data['video'], data['track_id'], timespan,
-            self.data_args.frames_upbound)
-        image = self.data_args.image_processor.preprocess(
-            frame_batch.data, return_tensors="pt")["pixel_values"]
-        source = copy.deepcopy(data["conversations"])
-        if self.data_args.add_time_instruction:
-            duration = end - start
-            pts_seconds = frame_batch.pts_seconds.tolist()
-            num_frames = len(frame_batch)
-            time_instruction = f"The video lasts for {duration:.2f} seconds," \
-                f" and {num_frames} frames are uniformly sampled from it. " \
-                f"These frames are located at {pts_seconds}. " \
-                "Please answer the following questions related to this video."
-            conv0 = source[0]["value"]
-            conv0 = conv0.replace(DEFAULT_IMAGE_TOKEN, "")
-            source[0]["value"] = \
-                f'{DEFAULT_IMAGE_TOKEN}\n{time_instruction}\n{conv0}'
+        offset = 0
+        while True:
+            current_index = (i + offset) % len(self)
+            try:
+                data = self.list_data_dict[current_index]
+                start, end = timespan = data['timespan']
+                frame_batch = load_video_track_segment(
+                    data['video'], data['track_id'], timespan,
+                    self.data_args.frames_upbound)
+                image = self.data_args.image_processor.preprocess(
+                    frame_batch.data, return_tensors="pt")["pixel_values"]
+                source = copy.deepcopy(data["conversations"])
+                if self.data_args.add_time_instruction:
+                    duration = end - start
+                    pts_seconds = frame_batch.pts_seconds.tolist()
+                    num_frames = len(frame_batch)
+                    time_instruction = f"The video lasts for {duration:.2f} seconds," \
+                        f" and {num_frames} frames are uniformly sampled from it. " \
+                        f"These frames are located at {pts_seconds}. " \
+                        "Please answer the following questions related to this video."
+                    conv0 = source[0]["value"]
+                    conv0 = conv0.replace(DEFAULT_IMAGE_TOKEN, "")
+                    source[0]["value"] = \
+                        f'{DEFAULT_IMAGE_TOKEN}\n{time_instruction}\n{conv0}'
 
-        sources = preprocess_multimodal([source], self.data_args)
-        data_dict = preprocess(sources, self.tokenizer, has_image=True)
-        if isinstance(i, int):
-            data_dict = dict(input_ids=data_dict["input_ids"][0],
-                             labels=data_dict["labels"][0])
-        data_dict["image"] = [(image, frame_batch.data[0].size(), "video")]
-        data_dict['id'] = data['id']
-        return data_dict
+                sources = preprocess_multimodal([source], self.data_args)
+                data_dict = preprocess(sources, self.tokenizer, has_image=True)
+                if isinstance(i, int):
+                    data_dict = dict(input_ids=data_dict["input_ids"][0],
+                                        labels=data_dict["labels"][0])
+                data_dict["image"] = [(image, frame_batch.data[0].size(), "video")]
+                data_dict['id'] = data['id']
+                return data_dict
+            except Exception as e:
+                print(f"Failed to load video {current_index}. Trying next video. Error: {e}")
+                offset += 1
 
 
 class LazySupervisedDataset(Dataset):
