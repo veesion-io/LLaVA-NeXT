@@ -13,7 +13,6 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-
 import ast
 import os
 import copy
@@ -71,28 +70,67 @@ class S3UploadCallback(TrainerCallback):
         self.upload_interval = 300  # Upload every 5 minutes
 
     def on_save(self, args, state, control, **kwargs):
-        start = time.time()
-        output_dir_path = Path(args.output_dir)
-        # Upload checkpoints, but not tensorboard logs
-        for file_path in output_dir_path.glob('**/*'):
-            if file_path.is_file() and 'runs' not in file_path.parts:
-                relative_path = file_path.relative_to(output_dir_path)
-                s3_key = str(self.prefix / relative_path)
-                rank0_print(f"saving checkpoint file {file_path} to s3://{self.bucket}/{s3_key}")
-                self.client.upload_file(str(file_path), self.bucket, s3_key)
-        
-        # Upload TensorBoard logs
-        self._upload_tensorboard_logs(args)
-        
-        end = time.time()
-        rank0_print(f"saving to s3 took {end - start} seconds")
+        """Upload checkpoint files to S3 with robust error handling"""
+        try:
+            start = time.time()
+            output_dir_path = Path(args.output_dir)
+            uploaded_files = 0
+            
+            # Upload checkpoints, but not tensorboard logs
+            for file_path in output_dir_path.glob('**/*'):
+                if file_path.is_file() and 'runs' not in file_path.parts:
+                    try:
+                        # Check if file exists and is readable before upload
+                        if not file_path.exists() or not file_path.is_file():
+                            rank0_print(f"⚠️  Skipping {file_path}: file doesn't exist or is not a regular file")
+                            continue
+                            
+                        # Check file size to avoid empty files
+                        if file_path.stat().st_size == 0:
+                            rank0_print(f"⚠️  Skipping {file_path}: file is empty")
+                            continue
+                            
+                        relative_path = file_path.relative_to(output_dir_path)
+                        s3_key = str(self.prefix / relative_path)
+                        rank0_print(f"📤 Uploading {file_path} to s3://{self.bucket}/{s3_key}")
+                        
+                        # Upload with retry mechanism
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                self.client.upload_file(str(file_path), self.bucket, s3_key)
+                                uploaded_files += 1
+                                break
+                            except Exception as upload_error:
+                                if attempt == max_retries - 1:
+                                    rank0_print(f"❌ Failed to upload {file_path} after {max_retries} attempts: {upload_error}")
+                                else:
+                                    rank0_print(f"⚠️  Upload attempt {attempt + 1} failed for {file_path}: {upload_error}, retrying...")
+                                    time.sleep(1)  # Brief delay before retry
+                                    
+                    except Exception as file_error:
+                        rank0_print(f"❌ Error processing file {file_path}: {file_error}")
+                        continue
+            
+            # Upload TensorBoard logs
+            self._upload_tensorboard_logs(args)
+            
+            end = time.time()
+            rank0_print(f"✅ S3 upload completed: {uploaded_files} files in {end - start:.2f} seconds")
+            
+        except Exception as e:
+            rank0_print(f"❌ S3UploadCallback.on_save failed: {e}")
+            # Don't re-raise the exception to avoid crashing training
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         # Upload TensorBoard logs periodically
-        current_time = time.time()
-        if current_time - self.last_upload_time > self.upload_interval:
-            self._upload_tensorboard_logs(args)
-            self.last_upload_time = current_time
+        try:
+            current_time = time.time()
+            if current_time - self.last_upload_time > self.upload_interval:
+                self._upload_tensorboard_logs(args)
+                self.last_upload_time = current_time
+        except Exception as e:
+            rank0_print(f"❌ S3UploadCallback.on_log failed: {e}")
 
     def _upload_tensorboard_logs(self, args):
         """Upload TensorBoard logs to S3"""
@@ -107,19 +145,37 @@ class S3UploadCallback(TrainerCallback):
             
             for file in tb_log_dir.rglob('*'):
                 if file.is_file():
-                    # Create S3 key for TensorBoard logs
-                    relative_path = file.relative_to(tb_log_dir)
-                    s3_key = str(self.tensorboard_prefix / relative_path)
-                    
-                    # Upload file
-                    self.client.upload_file(str(file), self.bucket, s3_key)
-                    uploaded_files += 1
+                    try:
+                        # Check file exists and has content
+                        if not file.exists() or file.stat().st_size == 0:
+                            continue
+                            
+                        # Create S3 key for TensorBoard logs
+                        relative_path = file.relative_to(tb_log_dir)
+                        s3_key = str(self.tensorboard_prefix / relative_path)
+                        
+                        # Upload file with retry
+                        max_retries = 2
+                        for attempt in range(max_retries):
+                            try:
+                                self.client.upload_file(str(file), self.bucket, s3_key)
+                                uploaded_files += 1
+                                break
+                            except Exception as upload_error:
+                                if attempt == max_retries - 1:
+                                    rank0_print(f"❌ Failed to upload TensorBoard file {file}: {upload_error}")
+                                else:
+                                    time.sleep(0.5)
+                                    
+                    except Exception as file_error:
+                        rank0_print(f"❌ Error processing TensorBoard file {file}: {file_error}")
+                        continue
             
             if uploaded_files > 0:
                 end = time.time()
-                rank0_print(f"Uploaded {uploaded_files} TensorBoard files to s3://{self.bucket}/{self.tensorboard_prefix} in {end - start:.2f}s")
+                rank0_print(f"📊 Uploaded {uploaded_files} TensorBoard files to s3://{self.bucket}/{self.tensorboard_prefix} in {end - start:.2f}s")
         except Exception as e:
-            rank0_print(f"Failed to upload TensorBoard logs: {e}")
+            rank0_print(f"❌ Failed to upload TensorBoard logs: {e}")
 
 
 @dataclass
