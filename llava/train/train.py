@@ -76,6 +76,18 @@ class S3UploadCallback(TrainerCallback):
             output_dir_path = Path(args.output_dir)
             uploaded_files = 0
             
+            # Define critical files that should be uploaded if they exist
+            critical_file_patterns = [
+                '*.bin',       # Model weights (pytorch_model.bin, model.bin, mm_projector.bin)
+                '*.safetensors',  # Safetensors model files
+                '*.pt',        # PyTorch files (rng_state_*.pt, optimizer.pt)
+                '*.json',      # Config files (config.json, tokenizer.json, etc.)
+                '*.txt',       # Text files (merges.txt, vocab.txt)
+                'training_args.bin',  # Training arguments
+                'trainer_state.json', # Trainer state
+                'latest',      # Latest checkpoint pointer
+            ]
+            
             # Upload checkpoints, but not tensorboard logs
             for file_path in output_dir_path.glob('**/*'):
                 if file_path.is_file() and 'runs' not in file_path.parts:
@@ -88,6 +100,12 @@ class S3UploadCallback(TrainerCallback):
                         # Check file size to avoid empty files
                         if file_path.stat().st_size == 0:
                             rank0_print(f"⚠️  Skipping {file_path}: file is empty")
+                            continue
+                        
+                        # Only upload files matching critical patterns
+                        file_matches_pattern = any(file_path.match(pattern) for pattern in critical_file_patterns)
+                        if not file_matches_pattern:
+                            rank0_print(f"⚠️  Skipping {file_path}: not a critical file pattern")
                             continue
                             
                         relative_path = file_path.relative_to(output_dir_path)
