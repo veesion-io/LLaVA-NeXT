@@ -238,12 +238,198 @@ class LengthGroupedSampler(Sampler):
 
 
 class LLaVATrainer(Trainer):
+    def create_accelerator_and_postprocess(self):
+        # The `accelerator` is created in `Trainer.training_step` which is too late for some parts of the code.
+        # So we create it here and override the one in `Trainer`.
+        # Stolen from: https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/trainer.py#L1210
 
-    # def training_step(self, model, inputs):
-    #     logger.info(f"{self.state.global_step}")
-    #     for key, value in inputs.items():
-    #         logger.info(f"{key}: {len(value)}")
-    #     super().training_step(model, inputs)
+        # `accelerator_config` is not a field of `self.args` so we pass it explicitly
+        # We need to do this a bit earlier than in the original implementation as we need the accelerator for
+        # `_get_train_sampler`.
+        # `accelerator_config` is not a field of `self.args` so we pass it explicitly
+        kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=self.args.ddp_timeout))
+        
+        accelerator_config = AcceleratorConfig(
+            split_batches=self.args.accelerator_config.split_batches,
+            dispatch_batches=self.args.accelerator_config.dispatch_batches,
+            even_batches=self.args.accelerator_config.even_batches,
+            use_seedable_sampler=self.args.accelerator_config.use_seedable_sampler,
+        )
+        if self.args.fp8:
+            accelerator_config.fp8 = self.args.fp8
+            accelerator_config.fp8_e4m3 = self.args.fp8_e4m3
+
+        if self.args.gradient_accumulation_steps > 1:
+            plugin = GradientAccumulationPlugin(
+                num_steps=self.args.gradient_accumulation_steps, sync_with_dataloader=False
+            )
+            accelerator_config.gradient_accumulation_plugin = plugin
+
+        self.accelerator = Accelerator(
+            deepspeed_plugin=self.args.deepspeed_plugin,
+            gradient_accumulation_steps=self.args.gradient_accumulation_steps,
+            project_config=self.args.get_project_config(),
+            mixed_precision=self.args.mixed_precision,
+            log_with=self.args.report_to,
+            project_dir=self.args.output_dir,
+            dispatch_batches=accelerator_config.dispatch_batches,
+            split_batches=accelerator_config.split_batches,
+            device_placement=self.args.device_placement,
+            kwargs_handlers=[kwargs],
+            accelerator_config=accelerator_config,
+        )
+
+        if self.accelerator.is_main_process:
+            self.accelerator.project_configuration.automatic_checkpoint_naming = (
+                self.args.checkpoint_name is None and self.args.hub_model_id is not None
+            )
+
+        # post-process accelerator
+        self.accelerator = self.accelerator.prepare(
+            self.accelerator,
+        )
+
+    def training_step(self, model, inputs):
+        # Ensure inputs are in the correct dtype for bf16 training
+        if hasattr(self.args, 'bf16') and self.args.bf16:
+            if 'images' in inputs and inputs['images'] is not None:
+                if isinstance(inputs['images'], list):
+                    inputs['images'] = [img.to(dtype=torch.bfloat16) if img is not None else None for img in inputs['images']]
+                else:
+                    inputs['images'] = inputs['images'].to(dtype=torch.bfloat16)
+        
+        # Call the parent to get loss and outputs
+        loss = super().training_step(model, inputs)
+        
+        # Generate proper video descriptions like eval.py
+        if self.state.global_step % 10 == 0:  # Log every 10 steps for cleaner output
+            try:
+                model.eval()
+                with torch.no_grad():
+                    if 'images' in inputs and inputs['images'] is not None:
+                        from llava.constants import DEFAULT_IMAGE_TOKEN, IMAGE_TOKEN_INDEX
+                        from llava.mm_utils import tokenizer_image_token
+                        from llava.conversation import conv_templates
+                        import copy
+                        
+                        # Process exactly one video like eval.py - complete 3-step pipeline on single video
+                        try:
+                            # Get first video from batch
+                            if isinstance(inputs['images'], list):
+                                video_tensor = inputs['images'][0] if len(inputs['images']) > 0 and inputs['images'][0] is not None else None
+                            else:
+                                video_tensor = inputs['images']
+                            
+                            if video_tensor is not None:
+                                # Show ground truth first
+                                if 'labels' in inputs and inputs['labels'] is not None:
+                                    try:
+                                        if isinstance(inputs['labels'], list):
+                                            gt_tokens = inputs['labels'][0]
+                                        else:
+                                            gt_tokens = inputs['labels'][0] if inputs['labels'].dim() > 1 else inputs['labels']
+                                        
+                                        valid_tokens = gt_tokens[gt_tokens != -100]
+                                        if len(valid_tokens) > 0:
+                                            gt_text = self.tokenizer.decode(valid_tokens, skip_special_tokens=True).strip()
+                                            # Clean up ground truth
+                                            for marker in ["Describe this video in detail.", "USER:", "ASSISTANT:"]:
+                                                if marker in gt_text:
+                                                    gt_text = gt_text.split(marker)[-1].strip()
+                                            rank0_print(f"Step {self.state.global_step} - GROUND TRUTH: {gt_text}")
+                                        else:
+                                            rank0_print(f"Step {self.state.global_step} - GROUND TRUTH: [No valid tokens]")
+                                    except Exception as e:
+                                        rank0_print(f"Step {self.state.global_step} - GROUND TRUTH ERROR: {e}")
+                                
+                                # Replicate exact eval.py prompts and flow
+                                conv_template = "qwen_1_5"
+                                DESCRIPTION_PROMPT = """This is a retail shop video surveillance video.
+It has been cropped to follow a single person in its center.
+Is this person hiding a store item in their personal bag (not shopping cart / basket, or regular shopping bag, but personal, like handbag, backpack, etc) or clothes (jacket, trousers, pockets).
+Explain your reasoning."""
+                                
+                                # Handle image sizes exactly like eval.py
+                                if 'image_sizes' in inputs and inputs['image_sizes'] is not None:
+                                    if isinstance(inputs['image_sizes'], list) and len(inputs['image_sizes']) > 0:
+                                        image_sizes = [inputs['image_sizes'][0]]
+                                    else:
+                                        image_sizes = [(1024, 576)]
+                                else:
+                                    image_sizes = [(1024, 576)]
+                                
+                                # Prepare image_tensors exactly like eval.py
+                                image_tensors = [video_tensor]
+                                
+                                # STEP 1: Generate description (exactly like eval.py)
+                                question = f"{DEFAULT_IMAGE_TOKEN}{DESCRIPTION_PROMPT}"
+                                conv = copy.deepcopy(conv_templates[conv_template])
+                                conv.append_message(conv.roles[0], question)
+                                conv.append_message(conv.roles[1], None)
+                                prompt_question = conv.get_prompt()
+                                
+                                input_ids = tokenizer_image_token(prompt_question, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
+                                
+                                cont = model.generate(
+                                    input_ids,
+                                    images=image_tensors,
+                                    image_sizes=image_sizes,
+                                    do_sample=False,
+                                    temperature=0,
+                                    max_new_tokens=4096,
+                                    modalities=["video"],
+                                )
+                                text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
+                                description = text_outputs[0]
+                                rank0_print(f"Step {self.state.global_step} - Description: {description}")
+                                
+                            else:
+                                rank0_print(f"Step {self.state.global_step} - No video data available")
+                        except Exception as e:
+                            rank0_print(f"Step {self.state.global_step} - Error: {e}")
+                    else:
+                        rank0_print(f"Step {self.state.global_step} - No video data available in current batch")
+                
+                model.train()
+            except Exception as e:
+                import traceback
+                rank0_print(f"Step {self.state.global_step} - Error generating video descriptions: {e}")
+                rank0_print(f"Traceback: {traceback.format_exc()}")
+        
+        return loss
+
+    def train(self, *args, **kwargs):
+        if self.args.resume_from_run_name:
+            import boto3
+            from pathlib import Path
+
+            s3 = boto3.resource('s3')
+            bucket = s3.Bucket('scalable-training-dataset')
+            prefix = f"training_checkpoints/{self.args.resume_from_run_name}/"
+
+            checkpoints = [
+                obj.key for obj in bucket.objects.filter(Prefix=prefix)
+                if 'checkpoint-' in obj.key and 'pytorch_model.bin' in obj.key
+            ]
+            
+            if not checkpoints:
+                raise ValueError(f"No checkpoints found for run: {self.args.resume_from_run_name}")
+
+            latest_checkpoint_path = sorted(checkpoints)[-1]
+            checkpoint_name = Path(latest_checkpoint_path).parent.name
+            local_checkpoint_dir = Path(self.args.output_dir) / checkpoint_name
+            
+            print(f"Resuming from {latest_checkpoint_path}")
+            
+            for obj in bucket.objects.filter(Prefix=str(Path(latest_checkpoint_path).parent)):
+                local_path = local_checkpoint_dir / Path(obj.key).name
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                print(f"Downloading {obj.key} to {local_path}")
+                bucket.download_file(obj.key, str(local_path))
+            
+            kwargs['resume_from_checkpoint'] = str(local_checkpoint_dir)
+
+        super().train(*args, **kwargs)
 
     def create_accelerator_and_postprocess(self):
         grad_acc_kwargs = {"num_steps": self.args.gradient_accumulation_steps}

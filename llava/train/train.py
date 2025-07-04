@@ -13,10 +13,10 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-
 import ast
 import os
 import copy
+from copy import deepcopy
 from dataclasses import dataclass, field
 import json
 import logging
@@ -41,12 +41,13 @@ from transformers import AutoConfig, TrainerCallback
 from torch.utils.data import Dataset, Subset, random_split
 from llava.constants import IGNORE_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, IMAGE_TOKEN_INDEX
 from llava.train.llava_trainer import LLaVATrainer
+from llava.train.custom_callbacks import SelectiveLoggingCallback, VideoDescriptionCallback, PerformanceOptimizationCallback
 
 from llava import conversation as conversation_lib
 from llava.model import *
 from llava.mm_utils import process_highres_image, process_anyres_image, process_highres_image_crop_split, tokenizer_image_token
 from llava.utils import rank0_print, process_video_with_pyav, process_video_with_decord
-from llava.track_segment_loading import load_video_track_segment
+from llava.track_segment_loading import load_video_track_segment, FrameBatch
 import boto3
 
 torch.multiprocessing.set_sharing_strategy("file_system")
@@ -62,18 +63,137 @@ class S3UploadCallback(TrainerCallback):
     def on_init_end(self, args, state, control, **kwargs):
         self.client = boto3.client('s3')
         self.bucket = 'scalable-training-dataset'
-        name = Path(args.output_dir).absolute().parent.parent.name
+        name = Path(args.output_dir).name
         self.prefix = Path('training_checkpoints') / name
+        self.tensorboard_prefix = Path('tensorboard_logs') / name
+        self.last_upload_time = time.time()
+        self.upload_interval = 300  # Upload every 5 minutes
 
     def on_save(self, args, state, control, **kwargs):
-        start = time.time()
-        for file in Path(args.output_dir).glob('**/*'):
-            if file.is_file():
-                prefix = str(self.prefix / file)
-                rank0_print(f"saving {file} to s3://{self.bucket}/{prefix}")
-                self.client.upload_file(file, self.bucket, prefix)
-        end = time.time()
-        rank0_print(f"saving to s3 took {end - start} seconds")
+        """Upload checkpoint files to S3 with robust error handling"""
+        try:
+            start = time.time()
+            output_dir_path = Path(args.output_dir)
+            uploaded_files = 0
+            
+            # Define critical files that should be uploaded if they exist
+            critical_file_patterns = [
+                '*.bin',       # Model weights (pytorch_model.bin, model.bin, mm_projector.bin)
+                '*.safetensors',  # Safetensors model files
+                '*.pt',        # PyTorch files (rng_state_*.pt, optimizer.pt)
+                '*.json',      # Config files (config.json, tokenizer.json, etc.)
+                '*.txt',       # Text files (merges.txt, vocab.txt)
+                'training_args.bin',  # Training arguments
+                'trainer_state.json', # Trainer state
+                'latest',      # Latest checkpoint pointer
+            ]
+            
+            # Upload checkpoints, but not tensorboard logs
+            for file_path in output_dir_path.glob('**/*'):
+                if file_path.is_file() and 'runs' not in file_path.parts:
+                    try:
+                        # Check if file exists and is readable before upload
+                        if not file_path.exists() or not file_path.is_file():
+                            rank0_print(f"⚠️  Skipping {file_path}: file doesn't exist or is not a regular file")
+                            continue
+                            
+                        # Check file size to avoid empty files
+                        if file_path.stat().st_size == 0:
+                            rank0_print(f"⚠️  Skipping {file_path}: file is empty")
+                            continue
+                        
+                        # Only upload files matching critical patterns
+                        file_matches_pattern = any(file_path.match(pattern) for pattern in critical_file_patterns)
+                        if not file_matches_pattern:
+                            rank0_print(f"⚠️  Skipping {file_path}: not a critical file pattern")
+                            continue
+                            
+                        relative_path = file_path.relative_to(output_dir_path)
+                        s3_key = str(self.prefix / relative_path)
+                        rank0_print(f"📤 Uploading {file_path} to s3://{self.bucket}/{s3_key}")
+                        
+                        # Upload with retry mechanism
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                self.client.upload_file(str(file_path), self.bucket, s3_key)
+                                uploaded_files += 1
+                                break
+                            except Exception as upload_error:
+                                if attempt == max_retries - 1:
+                                    rank0_print(f"❌ Failed to upload {file_path} after {max_retries} attempts: {upload_error}")
+                                else:
+                                    rank0_print(f"⚠️  Upload attempt {attempt + 1} failed for {file_path}: {upload_error}, retrying...")
+                                    time.sleep(1)  # Brief delay before retry
+                                    
+                    except Exception as file_error:
+                        rank0_print(f"❌ Error processing file {file_path}: {file_error}")
+                        continue
+            
+            # Upload TensorBoard logs
+            self._upload_tensorboard_logs(args)
+            
+            end = time.time()
+            rank0_print(f"✅ S3 upload completed: {uploaded_files} files in {end - start:.2f} seconds")
+            
+        except Exception as e:
+            rank0_print(f"❌ S3UploadCallback.on_save failed: {e}")
+            # Don't re-raise the exception to avoid crashing training
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        # Upload TensorBoard logs periodically
+        try:
+            current_time = time.time()
+            if current_time - self.last_upload_time > self.upload_interval:
+                self._upload_tensorboard_logs(args)
+                self.last_upload_time = current_time
+        except Exception as e:
+            rank0_print(f"❌ S3UploadCallback.on_log failed: {e}")
+
+    def _upload_tensorboard_logs(self, args):
+        """Upload TensorBoard logs to S3"""
+        try:
+            # Find TensorBoard log directory
+            tb_log_dir = Path(args.output_dir) / 'runs'
+            if not tb_log_dir.exists():
+                return
+            
+            start = time.time()
+            uploaded_files = 0
+            
+            for file in tb_log_dir.rglob('*'):
+                if file.is_file():
+                    try:
+                        # Check file exists and has content
+                        if not file.exists() or file.stat().st_size == 0:
+                            continue
+                            
+                        # Create S3 key for TensorBoard logs
+                        relative_path = file.relative_to(tb_log_dir)
+                        s3_key = str(self.tensorboard_prefix / relative_path)
+                        
+                        # Upload file with retry
+                        max_retries = 2
+                        for attempt in range(max_retries):
+                            try:
+                                self.client.upload_file(str(file), self.bucket, s3_key)
+                                uploaded_files += 1
+                                break
+                            except Exception as upload_error:
+                                if attempt == max_retries - 1:
+                                    rank0_print(f"❌ Failed to upload TensorBoard file {file}: {upload_error}")
+                                else:
+                                    time.sleep(0.5)
+                                    
+                    except Exception as file_error:
+                        rank0_print(f"❌ Error processing TensorBoard file {file}: {file_error}")
+                        continue
+            
+            if uploaded_files > 0:
+                end = time.time()
+                rank0_print(f"📊 Uploaded {uploaded_files} TensorBoard files to s3://{self.bucket}/{self.tensorboard_prefix} in {end - start:.2f}s")
+        except Exception as e:
+            rank0_print(f"❌ Failed to upload TensorBoard logs: {e}")
 
 
 @dataclass
@@ -185,6 +305,10 @@ class TrainingArguments(transformers.TrainingArguments):
     gradient_checkpointing: bool = field(default=True)
     verbose_logging: bool = field(default=False)
     attn_implementation: str = field(default="flash_attention_2", metadata={"help": "Use transformers attention implementation."})
+    fp8: bool = field(default=False, metadata={"help": "Enable FP8 training."})
+    fp8_e4m3: bool = field(default=False, metadata={"help": "Use E4M3 format for FP8 training."})
+    eval_dataset_size: Optional[int] = field(default=None, metadata={"help": "Size of the evaluation dataset. If provided, will use a subset for faster evaluation."})
+    resume_from_run_name: Optional[str] = field(default=None, metadata={"help": "The name of the run to resume from."})
 
 
 # @dataclass
@@ -991,7 +1115,20 @@ class LLaVASubset(Subset):
     def __init__(self, subset: Subset):
         self.dataset = subset.dataset
         self.indices = subset.indices
-        self.list_data_dict = self.dataset.list_data_dict
+        
+        # Handle nested subsets - find the root dataset with list_data_dict
+        root_dataset = subset.dataset
+        while hasattr(root_dataset, 'dataset') and not hasattr(root_dataset, 'list_data_dict'):
+            root_dataset = root_dataset.dataset
+        
+        if hasattr(root_dataset, 'list_data_dict'):
+            self.list_data_dict = root_dataset.list_data_dict
+        else:
+            # Fallback: try to get from the immediate dataset
+            if hasattr(subset.dataset, 'list_data_dict'):
+                self.list_data_dict = subset.dataset.list_data_dict
+            else:
+                raise AttributeError(f"Cannot find list_data_dict in dataset hierarchy for {type(subset.dataset)}")
 
     @property
     def modality_lengths(self):
@@ -1019,35 +1156,57 @@ class TrackSegmentDataset(Dataset):
         return modality_lengths(self)
 
     def __getitem__(self, i):
-        data = self.list_data_dict[i]
-        start, end = timespan = data['timespan']
-        frame_batch = load_video_track_segment(
-            data['video'], data['track_id'], timespan,
-            self.data_args.frames_upbound)
-        image = self.data_args.image_processor.preprocess(
-            frame_batch.data, return_tensors="pt")["pixel_values"]
-        source = copy.deepcopy(data["conversations"])
-        if self.data_args.add_time_instruction:
-            duration = end - start
-            pts_seconds = frame_batch.pts_seconds.tolist()
-            num_frames = len(frame_batch)
-            time_instruction = f"The video lasts for {duration:.2f} seconds," \
-                f" and {num_frames} frames are uniformly sampled from it. " \
-                f"These frames are located at {pts_seconds}. " \
-                "Please answer the following questions related to this video."
-            conv0 = source[0]["value"]
-            conv0 = conv0.replace(DEFAULT_IMAGE_TOKEN, "")
-            source[0]["value"] = \
-                f'{DEFAULT_IMAGE_TOKEN}\n{time_instruction}\n{conv0}'
+        offset = 0
+        while True:
+            current_index = (i + offset) % len(self)
+            try:
+                data = self.list_data_dict[current_index]
+                start, end = timespan = data['timespan']
+                frame_batch = load_video_track_segment(
+                    data['video'], data['track_id'], timespan,
+                    self.data_args.frames_upbound)
+                
+                # Apply random horizontal flip augmentation with 50% probability
+                if random.random() < 0.5:
+                    frame_batch_data = []
+                    for frame in frame_batch.data:
+                        # Check if frame is PIL Image or tensor and flip accordingly
+                        if hasattr(frame, 'transpose') and hasattr(frame, 'size'):
+                            # PIL Image
+                            flipped_frame = frame.transpose(Image.FLIP_LEFT_RIGHT)
+                        else:
+                            # Tensor - flip horizontally along width dimension
+                            flipped_frame = torch.flip(frame, [-1])
+                        frame_batch_data.append(flipped_frame)
+                    frame_batch = FrameBatch(frame_batch_data, frame_batch.pts_seconds, frame_batch.duration_seconds)
+                
+                image = self.data_args.image_processor.preprocess(
+                    frame_batch.data, return_tensors="pt")["pixel_values"]
+                source = copy.deepcopy(data["conversations"])
+                if self.data_args.add_time_instruction:
+                    duration = end - start
+                    pts_seconds = frame_batch.pts_seconds.tolist()
+                    num_frames = len(frame_batch)
+                    time_instruction = f"The video lasts for {duration:.2f} seconds," \
+                        f" and {num_frames} frames are uniformly sampled from it. " \
+                        f"These frames are located at {pts_seconds}. " \
+                        "Please answer the following questions related to this video."
+                    conv0 = source[0]["value"]
+                    conv0 = conv0.replace(DEFAULT_IMAGE_TOKEN, "")
+                    source[0]["value"] = \
+                        f'{DEFAULT_IMAGE_TOKEN}\n{time_instruction}\n{conv0}'
 
-        sources = preprocess_multimodal([source], self.data_args)
-        data_dict = preprocess(sources, self.tokenizer, has_image=True)
-        if isinstance(i, int):
-            data_dict = dict(input_ids=data_dict["input_ids"][0],
-                             labels=data_dict["labels"][0])
-        data_dict["image"] = [(image, frame_batch.data[0].size(), "video")]
-        data_dict['id'] = data['id']
-        return data_dict
+                sources = preprocess_multimodal([source], self.data_args)
+                data_dict = preprocess(sources, self.tokenizer, has_image=True)
+                if isinstance(i, int):
+                    data_dict = dict(input_ids=data_dict["input_ids"][0],
+                                        labels=data_dict["labels"][0])
+                data_dict["image"] = [(image, frame_batch.data[0].size(), "video")]
+                data_dict['id'] = data['id']
+                return data_dict
+            except Exception as e:
+                print(f"Failed to load video {current_index}. Trying next video. Error: {e}")
+                offset += 1
 
 
 class LazySupervisedDataset(Dataset):
@@ -1384,12 +1543,20 @@ class DataCollatorForSupervisedDataset(object):
         return batch
 
 
-def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args) -> Dict:
+def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args, training_args=None) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
     # train_dataset = LazySupervisedDataset(tokenizer=tokenizer, data_path=data_args.data_path, data_args=data_args)
     dataset = TrackSegmentDataset(tokenizer=tokenizer, data_path=data_args.data_path, data_args=data_args)
     generator = torch.Generator().manual_seed(42)
     train_dataset, eval_dataset = random_split(dataset, [0.8, 0.2], generator=generator)
+    
+    # Limit evaluation dataset size if specified
+    if training_args and training_args.eval_dataset_size is not None:
+        eval_size = min(training_args.eval_dataset_size, len(eval_dataset))
+        eval_indices = list(range(eval_size))
+        eval_dataset = Subset(eval_dataset, eval_indices)
+        rank0_print(f"Limited evaluation dataset to {eval_size} samples for faster evaluation")
+    
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     return dict(train_dataset=LLaVASubset(train_dataset),
                 eval_dataset=LLaVASubset(eval_dataset),
@@ -1795,10 +1962,17 @@ def train(attn_implementation=None):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
 
-    data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
+    data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args, training_args=training_args)
+    # Create custom callbacks for selective logging and performance optimization
+    custom_callbacks = [
+        S3UploadCallback(),
+        SelectiveLoggingCallback(log_every_n_steps=10),
+        PerformanceOptimizationCallback()
+    ]
+    
     trainer = LLaVATrainer(
             model=model, tokenizer=tokenizer, args=training_args,
-            callbacks=[S3UploadCallback()], **data_module)
+            callbacks=custom_callbacks, **data_module)
 
     if list(Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)

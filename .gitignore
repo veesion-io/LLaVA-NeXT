@@ -3,12 +3,15 @@ __pycache__
 *.pyc
 *.egg-info
 dist
-
+env/
+*.txt
 # Log
 *.log
 *.log.*
 # *.json
 # *.jsonl
+events.out.tfevents.*
+*.mdc
 
 # Data
 !**/alpaca-data-conversation.json
@@ -71,3 +74,4 @@ playground/*.json
 mlx_configs/
 data_processing/
 # demo/
+corrupted_videos.txt
