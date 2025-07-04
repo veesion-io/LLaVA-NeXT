@@ -47,7 +47,7 @@ from llava import conversation as conversation_lib
 from llava.model import *
 from llava.mm_utils import process_highres_image, process_anyres_image, process_highres_image_crop_split, tokenizer_image_token
 from llava.utils import rank0_print, process_video_with_pyav, process_video_with_decord
-from llava.track_segment_loading import load_video_track_segment
+from llava.track_segment_loading import load_video_track_segment, FrameBatch
 import boto3
 
 torch.multiprocessing.set_sharing_strategy("file_system")
@@ -1165,6 +1165,16 @@ class TrackSegmentDataset(Dataset):
                 frame_batch = load_video_track_segment(
                     data['video'], data['track_id'], timespan,
                     self.data_args.frames_upbound)
+                
+                # Apply random horizontal flip augmentation with 50% probability
+                if random.random() < 0.5:
+                    frame_batch_data = []
+                    for frame in frame_batch.data:
+                        # Flip PIL Image horizontally
+                        flipped_frame = frame.transpose(Image.FLIP_LEFT_RIGHT)
+                        frame_batch_data.append(flipped_frame)
+                    frame_batch = FrameBatch(frame_batch_data, frame_batch.pts_seconds, frame_batch.duration_seconds)
+                
                 image = self.data_args.image_processor.preprocess(
                     frame_batch.data, return_tensors="pt")["pixel_values"]
                 source = copy.deepcopy(data["conversations"])

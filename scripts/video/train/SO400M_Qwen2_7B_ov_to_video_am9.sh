@@ -62,15 +62,15 @@ echo "BASE_RUN_NAME: ${BASE_RUN_NAME}"
 
 # Stage 2
 PROMPT_VERSION="qwen_1_5"
-MID_RUN_NAME="llavanext-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-ov_to_video_am9"
+MID_RUN_NAME="llavanext-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-ov_to_video_am9_vision_focused"
 PREV_STAGE_CHECKPOINT="lmms-lab/llava-onevision-qwen2-0.5b-ov"
 echo "PREV_STAGE_CHECKPOINT: ${PREV_STAGE_CHECKPOINT}"
 echo "MID_RUN_NAME: ${MID_RUN_NAME}"
 
-# Set default values for single-node training if not provided
+# Set default values for multi-node training if not provided
 export NODE_RANK=${NODE_RANK:-0}
-export GPU_INSTANCES_NUMBER=${GPU_INSTANCES_NUMBER:-1}
-export GPU_COUNT=${GPU_COUNT:-8}
+export GPU_INSTANCES_NUMBER=${GPU_INSTANCES_NUMBER:-8}
+export GPU_COUNT=${GPU_COUNT:-1}
 export MASTER_PRIVATE_IP=${MASTER_PRIVATE_IP:-127.0.0.1}
 
 echo "Using NODE_RANK: ${NODE_RANK}"
@@ -103,7 +103,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --version $PROMPT_VERSION \
     --data_path $DATA_YAML \
     --mm_tunable_parts="mm_vision_tower,mm_language_model" \
-    --mm_vision_tower_lr=2e-6 \
+    --mm_vision_tower_lr=1e-5 \
     --vision_tower ${VISION_MODEL_VERSION} \
     --mm_projector_type mlp2x_gelu \
     --mm_vision_select_layer -2 \
@@ -117,16 +117,16 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --run_name $MID_RUN_NAME \
     --output_dir ./work_dirs/$MID_RUN_NAME \
     --num_train_epochs 5 \
-    --per_device_train_batch_size 4 \
-    --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 1 \
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
+    --gradient_accumulation_steps 2 \
     --evaluation_strategy "steps" \
     --eval_steps 1000 \
     --eval_dataset_size 128 \
     --save_strategy "steps" \
     --save_steps 1000 \
     --save_total_limit 1 \
-    --learning_rate 1e-5 \
+    --learning_rate 5e-6 \
     --weight_decay 0. \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
@@ -149,3 +149,4 @@ ACCELERATE_CPU_AFFINITY=1 torchrun \
     --attn_implementation "flash_attention_2"
 #    --force_sample False \
 exit 0;
+
