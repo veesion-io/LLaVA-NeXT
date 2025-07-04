@@ -67,10 +67,10 @@ PREV_STAGE_CHECKPOINT="lmms-lab/llava-onevision-qwen2-0.5b-ov"
 echo "PREV_STAGE_CHECKPOINT: ${PREV_STAGE_CHECKPOINT}"
 echo "MID_RUN_NAME: ${MID_RUN_NAME}"
 
-# Set default values for multi-node training if not provided
+# Set default values for single-node training if not provided
 export NODE_RANK=${NODE_RANK:-0}
-export GPU_INSTANCES_NUMBER=${GPU_INSTANCES_NUMBER:-8}
-export GPU_COUNT=${GPU_COUNT:-1}
+export GPU_INSTANCES_NUMBER=${GPU_INSTANCES_NUMBER:-1}
+export GPU_COUNT=${GPU_COUNT:-8}
 export MASTER_PRIVATE_IP=${MASTER_PRIVATE_IP:-127.0.0.1}
 
 echo "Using NODE_RANK: ${NODE_RANK}"
