@@ -1170,8 +1170,13 @@ class TrackSegmentDataset(Dataset):
                 if random.random() < 0.5:
                     frame_batch_data = []
                     for frame in frame_batch.data:
-                        # Flip PIL Image horizontally
-                        flipped_frame = frame.transpose(Image.FLIP_LEFT_RIGHT)
+                        # Check if frame is PIL Image or tensor and flip accordingly
+                        if hasattr(frame, 'transpose') and hasattr(frame, 'size'):
+                            # PIL Image
+                            flipped_frame = frame.transpose(Image.FLIP_LEFT_RIGHT)
+                        else:
+                            # Tensor - flip horizontally along width dimension
+                            flipped_frame = torch.flip(frame, [-1])
                         frame_batch_data.append(flipped_frame)
                     frame_batch = FrameBatch(frame_batch_data, frame_batch.pts_seconds, frame_batch.duration_seconds)
                 
