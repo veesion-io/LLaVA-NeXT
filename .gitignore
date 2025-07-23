@@ -21,6 +21,9 @@ dist
 .DS_Store
 wandb
 output
+tensorrt_export
+onnx_export
+weights/
 llavavid
 
 checkpoints
@@ -36,6 +39,8 @@ chunyl_scripts
 
 # DevContainer
 !.devcontainer/*
+*.weight
+qwen2_text_llm/
 
 # Demo
 serve_images/
