@@ -1,30 +1,26 @@
 import os
 import torch
 import torch.nn as nn
-import datetime
+from datetime import timedelta
+from typing import Dict, Union, Any, List, Optional
 
 from accelerate import Accelerator
 from accelerate.utils import InitProcessGroupKwargs, GradientAccumulationPlugin
-from torch.utils.data import Dataset, Sampler, DataLoader
+from torch.utils.data import Sampler, DataLoader
 
 from trl.trainer import DPOTrainer
-from trl.trainer.utils import DPODataCollatorWithPadding
 
 from transformers import Trainer
-from transformers.trainer import is_sagemaker_mp_enabled, get_parameter_names, has_length, ALL_LAYERNORM_LAYERS, logger, is_accelerate_available, is_datasets_available, GradientAccumulationPlugin
+from transformers.trainer import is_sagemaker_mp_enabled, get_parameter_names, has_length, ALL_LAYERNORM_LAYERS, logger, is_accelerate_available, is_datasets_available
 from transformers.trainer_utils import seed_worker
 from transformers.trainer_pt_utils import get_length_grouped_indices as get_length_grouped_indices_hf
-from transformers.trainer_pt_utils import AcceleratorConfig
-from typing import List, Optional
-from datetime import timedelta
+from llava.utils import rank0_print
 
 if is_accelerate_available():
-    from accelerate import Accelerator, skip_first_batches, InitProcessGroupKwargs
+    from accelerate import Accelerator, InitProcessGroupKwargs
 
 if is_datasets_available():
     import datasets
-
-from llava.utils import rank0_print
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -100,12 +96,12 @@ def get_modality_length_grouped_indices(lengths, batch_size, world_size, generat
     """
 
     # We need to use torch for the random part as a distributed sampler will set the random seed for torch.
-    assert all(l != 0 for l in lengths), "Should not have zero length."
-    if all(l > 0 for l in lengths) or all(l < 0 for l in lengths):
+    assert all(length_val != 0 for length_val in lengths), "Should not have zero length."
+    if all(length_val > 0 for length_val in lengths) or all(length_val < 0 for length_val in lengths):
         # all samples are in the same modality
         return get_length_grouped_indices(lengths, batch_size, world_size, generator=generator)
-    mm_indices, mm_lengths = zip(*[(i, l) for i, l in enumerate(lengths) if l > 0])
-    lang_indices, lang_lengths = zip(*[(i, -l) for i, l in enumerate(lengths) if l < 0])
+    mm_indices, mm_lengths = zip(*[(i, length_val) for i, length_val in enumerate(lengths) if length_val > 0])
+    lang_indices, lang_lengths = zip(*[(i, -length_val) for i, length_val in enumerate(lengths) if length_val < 0])
 
     mm_shuffle = [mm_indices[i] for i in get_length_grouped_indices(mm_lengths, batch_size, world_size, generator=None)]
     lang_shuffle = [lang_indices[i] for i in get_length_grouped_indices(lang_lengths, batch_size, world_size, generator=None)]
@@ -113,15 +109,16 @@ def get_modality_length_grouped_indices(lengths, batch_size, world_size, generat
     mm_megabatches = [mm_shuffle[i : i + megabatch_size] for i in range(0, len(mm_shuffle), megabatch_size)]
     lang_megabatches = [lang_shuffle[i : i + megabatch_size] for i in range(0, len(lang_shuffle), megabatch_size)]
 
-    last_mm = mm_megabatches[-1]
-    last_lang = lang_megabatches[-1]
-    additional_batch = last_mm + last_lang
+    # last_mm = mm_megabatches[-1] # Commented out as it's unused
+    # last_lang = lang_megabatches[-1] # Commented out as it's unused
+    # additional_batch = last_mm + last_lang # Commented out as it's unused due to FIXME below
     megabatches = mm_megabatches[:-1] + lang_megabatches[:-1]
     megabatch_indices = torch.randperm(len(megabatches), generator=generator)
     megabatches = [megabatches[i] for i in megabatch_indices]
 
-    if len(additional_batch) > 0:
-        megabatches.append(sorted(additional_batch))
+    # FIXME: Hard code to avoid last batch mixed with different modalities
+    # if len(additional_batch) > 0:
+    #     megabatches.append(sorted(additional_batch))
 
     return [i for megabatch in megabatches for i in megabatch]
 
@@ -166,12 +163,12 @@ def get_length_grouped_indices_auto_single(lengths, batch_size, world_size, gene
 
 def get_modality_length_grouped_indices_auto(lengths, batch_size, world_size, generator=None):
     # We need to use torch for the random part as a distributed sampler will set the random seed for torch.
-    assert all(l != 0 for l in lengths), "Should not have zero length."
-    if all(l > 0 for l in lengths) or all(l < 0 for l in lengths):
+    assert all(length_val != 0 for length_val in lengths), "Should not have zero length."
+    if all(length_val > 0 for length_val in lengths) or all(length_val < 0 for length_val in lengths):
         # all samples are in the same modality
         return get_length_grouped_indices_auto_single(lengths, batch_size, world_size, generator=generator)
-    mm_indices, mm_lengths = zip(*[(i, l) for i, l in enumerate(lengths) if l > 0])
-    lang_indices, lang_lengths = zip(*[(i, -l) for i, l in enumerate(lengths) if l < 0])
+    mm_indices, mm_lengths = zip(*[(i, length_val) for i, length_val in enumerate(lengths) if length_val > 0])
+    lang_indices, lang_lengths = zip(*[(i, -length_val) for i, length_val in enumerate(lengths) if length_val < 0])
 
     mm_shuffle = [mm_indices[i] for i in get_length_grouped_indices_auto_single(mm_lengths, batch_size, world_size, generator=None)]
     lang_shuffle = [lang_indices[i] for i in get_length_grouped_indices_auto_single(lang_lengths, batch_size, world_size, generator=None)]
@@ -179,9 +176,9 @@ def get_modality_length_grouped_indices_auto(lengths, batch_size, world_size, ge
     mm_megabatches = [mm_shuffle[i : i + megabatch_size] for i in range(0, len(mm_shuffle), megabatch_size)]
     lang_megabatches = [lang_shuffle[i : i + megabatch_size] for i in range(0, len(lang_shuffle), megabatch_size)]
 
-    last_mm = mm_megabatches[-1]
-    last_lang = lang_megabatches[-1]
-    additional_batch = last_mm + last_lang
+    # last_mm = mm_megabatches[-1] # Commented out as it's unused
+    # last_lang = lang_megabatches[-1] # Commented out as it's unused
+    # additional_batch = last_mm + last_lang # Commented out as it's unused due to FIXME below
     megabatches = mm_megabatches[:-1] + lang_megabatches[:-1]
     megabatch_indices = torch.randperm(len(megabatches), generator=generator)
     megabatches = [megabatches[i] for i in megabatch_indices]
@@ -239,19 +236,207 @@ class LengthGroupedSampler(Sampler):
 
 class LLaVATrainer(Trainer):
 
-    # def training_step(self, model, inputs):
-    #     logger.info(f"{self.state.global_step}")
-    #     for key, value in inputs.items():
-    #         logger.info(f"{key}: {len(value)}")
-    #     super().training_step(model, inputs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Initialize gradient scaling attributes for compatibility
+        self.do_grad_scaling = False
+        self.use_apex = False
+        self.scaler = None
+        
+        # Check if we should use gradient scaling
+        if hasattr(self.args, 'fp16') and self.args.fp16:
+            self.do_grad_scaling = True
+            from torch.cuda.amp import GradScaler
+            self.scaler = GradScaler()
+        
+        # Check if we should use Apex
+        try:
+            import apex
+            self.use_apex = getattr(self.args, 'use_apex', False)
+        except ImportError:
+            self.use_apex = False
+
+    def print_video_description_sample(self, model, inputs, step_num):
+        """Print a video description sample every 10 batches on rank 0."""
+        if step_num % 10 != 0 or not hasattr(self.args, 'local_rank') or self.args.local_rank != 0:
+            return
+        
+        try:
+            from llava.utils import rank0_print
+            rank0_print(f"\n{'='*80}")
+            rank0_print(f"VIDEO DESCRIPTION SAMPLE - STEP {step_num}")
+            rank0_print(f"{'='*80}")
+            
+            # Get the first sample from the batch
+            if "input_ids" in inputs and inputs["input_ids"].shape[0] > 0:
+                input_ids = inputs["input_ids"][0]  # First sample
+                
+                # Get tokenizer from trainer (preferred) or model
+                tokenizer = None
+                if hasattr(self, 'tokenizer') and self.tokenizer is not None:
+                    tokenizer = self.tokenizer
+                elif hasattr(model, 'get_tokenizer'):
+                    tokenizer = model.get_tokenizer()
+                elif hasattr(model, 'config') and hasattr(model.config, 'tokenizer'):
+                    tokenizer = model.config.tokenizer
+                else:
+                    # Try to get tokenizer from the model's module
+                    tokenizer = getattr(model, 'tokenizer', None)
+                    if tokenizer is None and hasattr(model, 'module'):
+                        tokenizer = getattr(model.module, 'tokenizer', None)
+                
+                if tokenizer is not None:
+                    try:
+                        # Simple approach: just decode and show raw tokens instead of parsing conversation
+                        input_text = tokenizer.decode(input_ids, skip_special_tokens=True)
+                        if input_text:
+                            rank0_print(f"DECODED TEXT (first 300 chars): {str(input_text)[:300]}...")
+                        else:
+                            rank0_print("DECODED TEXT: (empty)")
+                        
+                        # Show some raw token IDs for debugging
+                        token_sample = input_ids[:50] if len(input_ids) > 50 else input_ids
+                        rank0_print(f"TOKEN IDS (first 50): {token_sample.tolist()}")
+                        
+                    except Exception as decode_error:
+                        rank0_print(f"Error during text decoding: {decode_error}")
+                        # Just show raw token IDs if decoding fails
+                        token_sample = input_ids[:20] if len(input_ids) > 20 else input_ids
+                        rank0_print(f"RAW TOKEN IDS (first 20): {token_sample.tolist()}")
+                    
+                    # Get video info if available
+                    if "images" in inputs and inputs["images"]:
+                        if isinstance(inputs["images"], list) and len(inputs["images"]) > 0:
+                            video_shape = inputs["images"][0].shape
+                            rank0_print(f"VIDEO TENSOR SHAPE: {video_shape}")  # e.g., [40, 3, 384, 384] = 40 frames
+                        elif hasattr(inputs["images"], 'shape'):
+                            rank0_print(f"VIDEO TENSOR SHAPE: {inputs['images'].shape}")
+                else:
+                    rank0_print("Could not access tokenizer to decode text")
+                    
+            rank0_print(f"{'='*80}\n")
+            
+        except Exception as e:
+            rank0_print(f"Error printing video description sample: {e}")
+            # Additional debug info for string processing errors
+            if "sequence item" in str(e) and "expected str instance" in str(e):
+
+    def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
+        """
+        Perform a training step on a batch of inputs with detailed timing information.
+        """
+        import time
+        step_start_time = time.time()
+        
+        rank0_print(f"🚀 TRAINING STEP STARTED - Input keys: {list(inputs.keys())}")
+
+        # Print video description sample every 10 batches
+        sample_time = 0
+        if hasattr(self, 'state') and hasattr(self.state, 'global_step'):
+            step_num = self.state.global_step
+            if step_num % 10 == 0:
+                sample_start = time.time()
+                self.print_video_description_sample(model, inputs, step_num)
+                sample_time = time.time() - sample_start
+                rank0_print(f"⏱️  VIDEO DESCRIPTION SAMPLING: {sample_time:.3f}s")
+
+        # Setup phase
+        setup_start = time.time()
+        model.train()
+        setup_time = time.time() - setup_start
+        rank0_print(f"⏱️  MODEL SETUP: {setup_time:.3f}s")
+
+        # Input preparation phase
+        prep_start = time.time()
+        inputs = self._prepare_inputs(inputs)
+        prep_time = time.time() - prep_start
+        rank0_print(f"⏱️  INPUT PREPARATION: {prep_time:.3f}s")
+        
+        # Log tensor info
+        if "images" in inputs and isinstance(inputs["images"], list) and len(inputs["images"]) > 0:
+            rank0_print(f"📊 BATCH INFO: {len(inputs['images'])} videos, first video shape: {inputs['images'][0].shape}")
+        elif "input_ids" in inputs:
+            rank0_print(f"📊 BATCH INFO: input_ids shape: {inputs['input_ids'].shape}")
+
+        # Forward pass phase
+        forward_start = time.time()
+        with self.compute_loss_context_manager():
+            loss = self.compute_loss(model, inputs)
+        forward_time = time.time() - forward_start
+        rank0_print(f"⏱️  FORWARD PASS: {forward_time:.3f}s")
+        rank0_print(f"📈 LOSS: {loss.item() if loss is not None and hasattr(loss, 'item') else 'N/A'}")
+
+        # Multi-GPU averaging
+        avg_start = time.time()
+        if self.args.n_gpu > 1:
+            loss = loss.mean()  # mean() to average on multi-gpu parallel training
+        avg_time = time.time() - avg_start
+        if avg_time > 0.001:  # Only log if significant
+            rank0_print(f"⏱️  MULTI-GPU AVERAGING: {avg_time:.3f}s")
+
+        # Backward pass phase
+        backward_start = time.time()
+        if self.do_grad_scaling:
+            self.scaler.scale(loss).backward()
+        elif self.use_apex:
+            with self.accelerator.scaled_loss(loss) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            self.accelerator.backward(loss)
+        backward_time = time.time() - backward_start
+        rank0_print(f"⏱️  BACKWARD PASS: {backward_time:.3f}s")
+
+        # Total timing
+        total_time = time.time() - step_start_time
+        rank0_print(f"⏱️  TOTAL STEP TIME: {total_time:.3f}s")
+        rank0_print(f"🔄 BREAKDOWN: Setup={setup_time:.3f}s, Prep={prep_time:.3f}s, Forward={forward_time:.3f}s, Backward={backward_time:.3f}s, Sample={sample_time:.3f}s")
+        rank0_print(f"🎯 STEP COMPLETED ✅\n")
+
+        return loss.detach() / self.args.gradient_accumulation_steps
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        """
+        How the loss is computed by Trainer with detailed timing.
+        """
+        import time
+        
+        # Log tensor shapes concisely
+        batch_size = inputs.get("input_ids", torch.tensor([0])).shape[0] if "input_ids" in inputs else 0
+        rank0_print(f"🔍 COMPUTE_LOSS: Batch size={batch_size}")
+        
+        # Model forward pass timing
+        forward_start = time.time()
+        outputs = model(**inputs)
+        forward_time = time.time() - forward_start
+        rank0_print(f"⏱️    MODEL FORWARD: {forward_time:.3f}s")
+        
+        # Save past state if it exists
+        if self.args.past_index >= 0:
+            self._past = outputs[self.args.past_index]
+
+        # Loss extraction timing
+        loss_start = time.time()
+        loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+        loss_time = time.time() - loss_start
+        if loss_time > 0.001:  # Only log if significant
+            rank0_print(f"⏱️    LOSS EXTRACTION: {loss_time:.3f}s")
+
+        return (loss, outputs) if return_outputs else loss
 
     def create_accelerator_and_postprocess(self):
         grad_acc_kwargs = {"num_steps": self.args.gradient_accumulation_steps}
         grad_acc_kwargs["sync_with_dataloader"] = False
         gradient_accumulation_plugin = GradientAccumulationPlugin(**grad_acc_kwargs)
 
-        accelerator_kwargs = InitProcessGroupKwargs(timeout=timedelta(weeks=52))
-        rank0_print("Setting NCCL timeout to INF to avoid running errors.")
+        # Fix NCCL hang issues with proper timeout and environment variables
+        os.environ["NCCL_DEBUG"] = "INFO"
+        os.environ["NCCL_TIMEOUT"] = "1800"  # 30 minutes instead of infinite
+        os.environ["NCCL_BLOCKING_WAIT"] = "1"
+        os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+        os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
+        
+        accelerator_kwargs = InitProcessGroupKwargs(timeout=timedelta(minutes=30))
+        rank0_print("Setting NCCL timeout to 30 minutes to avoid hangs while still allowing for initialization.")
 
         # create accelerator object
         self.accelerator = Accelerator(
@@ -458,7 +643,7 @@ class LLaVATrainer(Trainer):
 
             if self.args.local_rank == 0 or self.args.local_rank == -1:
                 self.model.config.save_pretrained(output_dir)
-                torch.save(weight_to_save, os.path.join(output_dir, f"mm_projector.bin"))
+                torch.save(weight_to_save, os.path.join(output_dir, "mm_projector.bin"))
         else:
             super(LLaVATrainer, self)._save_checkpoint(model, trial, metrics)
 
@@ -506,7 +691,7 @@ class LLaVADPOTrainer(DPOTrainer):
 
             if self.args.local_rank == 0 or self.args.local_rank == -1:
                 self.model.config.save_pretrained(output_dir)
-                torch.save(weight_to_save, os.path.join(output_dir, f"mm_projector.bin"))
+                torch.save(weight_to_save, os.path.join(output_dir, "mm_projector.bin"))
         else:
             # super(LLaVADPOTrainer, self)._save_checkpoint(model, trial, metrics)
             # print(type(model))

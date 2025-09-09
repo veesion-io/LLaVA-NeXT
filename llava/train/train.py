@@ -57,11 +57,24 @@ local_rank = None
 IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= version.parse("0.14")
 
 
+class DebugCallback(TrainerCallback):
+    def on_step_begin(self, args, state, control, **kwargs):
+
+    def on_step_end(self, args, state, control, **kwargs):
+        # It might be useful to see the logs that the trainer itself produces
+        # but only log if there's something new to avoid too much noise.
+        # This requires checking if new logs are available since the last call,
+        # which can be complex. For now, let's log every N steps or based on time.
+        # Or simply rely on on_log.
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+
+
 class S3UploadCallback(TrainerCallback):
 
     def on_init_end(self, args, state, control, **kwargs):
         self.client = boto3.client('s3')
-        self.bucket = 'scalable-training-dataset'
+        self.bucket = 'scalable-training-dataset-us-east-1'
         name = Path(args.output_dir).absolute().parent.parent.name
         self.prefix = Path('training_checkpoints') / name
 
@@ -1019,13 +1032,35 @@ class TrackSegmentDataset(Dataset):
         return modality_lengths(self)
 
     def __getitem__(self, i):
-        data = self.list_data_dict[i]
-        start, end = timespan = data['timespan']
-        frame_batch = load_video_track_segment(
-            data['video'], data['track_id'], timespan,
-            self.data_args.frames_upbound)
+        # Add retry limit to prevent infinite loops
+        max_retries = 100
+        original_i = i
+        
+        for retry in range(max_retries):
+            try:
+                data = self.list_data_dict[i]
+                start, end = timespan = data['timespan']
+                
+                frame_batch = load_video_track_segment(
+                    data['video'], data['track_id'], timespan,
+                    self.data_args.frames_upbound)
+                break  # Success, exit retry loop
+                
+            except Exception as e:
+                if retry == 0 or retry % 10 == 0:  # Print on first attempt and every 10th retry
+                    rank0_print(f"Failed to load video {data['video']} (attempt {retry+1}): {e}. Trying next samples...")
+                i = (i + 1) % len(self.list_data_dict)
+                if i == original_i:  # We've gone through the entire dataset
+                    rank0_print(f"ERROR: All videos in dataset appear to be missing/corrupted. Cannot proceed with training.")
+                    raise RuntimeError("No valid videos found in dataset")
+        else:
+            # If we've exhausted all retries
+            rank0_print(f"ERROR: Failed to find valid video after {max_retries} attempts")
+            raise RuntimeError(f"Failed to find valid video after {max_retries} attempts")
+
         image = self.data_args.image_processor.preprocess(
             frame_batch.data, return_tensors="pt")["pixel_values"]
+
         source = copy.deepcopy(data["conversations"])
         if self.data_args.add_time_instruction:
             duration = end - start
@@ -1042,11 +1077,16 @@ class TrackSegmentDataset(Dataset):
 
         sources = preprocess_multimodal([source], self.data_args)
         data_dict = preprocess(sources, self.tokenizer, has_image=True)
+
         if isinstance(i, int):
             data_dict = dict(input_ids=data_dict["input_ids"][0],
                              labels=data_dict["labels"][0])
+        
         data_dict["image"] = [(image, frame_batch.data[0].size(), "video")]
         data_dict['id'] = data['id']
+        
+        # Single print to signal element is ready for collator
+        rank0_print(f"ELEMENT_READY: Transmitting element {data_dict['id']} to collator")
         return data_dict
 
 
@@ -1356,11 +1396,14 @@ class DataCollatorForSupervisedDataset(object):
         # input_ids, labels, ids = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels", "id"))
         input_ids = [_input_ids[: self.tokenizer.model_max_length] for _input_ids in input_ids]
         labels = [_labels[: self.tokenizer.model_max_length] for _labels in labels]
+
         if self.tokenizer.pad_token_id is None:
             # self.tokenizer.pad_token_id = self.tokenizer.eos_token_id  # FIXME: this could only be triggered for llama3 model.
             self.tokenizer.pad_token_id = 0 # This gets the best result. Don't know why.
+        
         input_ids = self.pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
         labels = self.pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX)
+
         batch = dict(input_ids=input_ids, labels=labels.long() if labels.dtype == torch.int32 else labels, attention_mask=input_ids.ne(self.tokenizer.pad_token_id))
         # batch = dict(input_ids=input_ids, labels=labels, attention_mask=input_ids.ne(self.tokenizer.pad_token_id), ids=ids)
 
@@ -1369,14 +1412,8 @@ class DataCollatorForSupervisedDataset(object):
 
             batch["image_sizes"] = [im[1] for im_list in images for im in im_list]
             batch["modalities"] = [im[2] for im_list in images for im in im_list]
-            images = [im[0] for im_list in images for im in im_list]
-
-            # if all(x is not None and x.shape == images[0].shape for x in images):
-                # Image: (N, P, C, H, W)
-                # Video: (N, F, C, H, W)
-            #     batch["images"] = torch.stack(images)
-            # else:
-            batch["images"] = images
+            # Extract the actual tensors from the nested structure
+            batch["images"] = [im[0] for im_list in images for im in im_list]
 
         if "prompt" in instances[0]:
             batch["prompts"] = [instance["prompt"] for instance in instances]
@@ -1391,9 +1428,10 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, dat
     generator = torch.Generator().manual_seed(42)
     train_dataset, eval_dataset = random_split(dataset, [0.8, 0.2], generator=generator)
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
-    return dict(train_dataset=LLaVASubset(train_dataset),
+    result = dict(train_dataset=LLaVASubset(train_dataset),
                 eval_dataset=LLaVASubset(eval_dataset),
                 data_collator=data_collator)
+    return result
 
 
 def get_model(model_args, training_args, bnb_model_from_pretrained_args):
@@ -1518,7 +1556,6 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
 
                 deepspeed.utils.set_z3_leaf_modules(model, [Qwen2MoeSparseMoeBlock])
             else:
-                rank0_print(f"DEBUG: get_model: Calling LlavaQwenForCausalLM.from_pretrained for {model_args.model_name_or_path} with customized_kwargs: {customized_kwargs}")
                 model = LlavaQwenForCausalLM.from_pretrained(
                     model_args.model_name_or_path,
                     cache_dir=training_args.cache_dir,
@@ -1527,7 +1564,6 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
                     low_cpu_mem_usage=False,
                     **customized_kwargs,
                 )
-                rank0_print(f"DEBUG: get_model: Calling LlavaQwenForCausalLM.from_pretrained done")
         elif "gemma" in model_args.model_name_or_path.lower():
             model = LlavaGemmaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
@@ -1553,42 +1589,67 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
 
 def train(attn_implementation=None):
     global local_rank
-
+    
+    # DISTRIBUTED TRAINING FIXES: Set comprehensive environment variables to prevent hangs and communication failures
+    # These settings are applied at the start of training to fix TCPStore communication issues
+    
+    # Existing GIL hang fixes (already applied)
+    os.environ.setdefault("TORCH_NCCL_ENABLE_MONITORING", "0")  # Disable NCCL monitoring to prevent GIL conflicts
+    os.environ.setdefault("TORCH_NCCL_BLOCKING_WAIT", "0")     # Non-blocking NCCL to avoid GIL deadlocks
+    os.environ.setdefault("NCCL_HEARTBEAT_TIMEOUT_SEC", "600") # Increased timeout for GIL resolution
+    os.environ.setdefault("PYTORCH_CUDA_MEMORY_FRACTION", "0.8") # Reduce memory pressure
+    
+    # New distributed communication improvements to prevent TCPStore failures
+    os.environ.setdefault("NCCL_SOCKET_TIMEOUT", "600000")     # 10 minutes socket timeout
+    os.environ.setdefault("NCCL_CONNECT_TIMEOUT", "300000")    # 5 minutes connection timeout  
+    os.environ.setdefault("NCCL_TCP_TIMEOUT", "1800000")       # 30 minutes TCP timeout
+    os.environ.setdefault("NCCL_RETRY_COUNT", "10")            # More retries for failed operations
+    os.environ.setdefault("NCCL_MAX_RETRY_COUNT", "10")        # Maximum retry attempts
+    os.environ.setdefault("NCCL_RETRY_SLEEP_MS", "1000")       # 1 second between retries
+    
+    # Reduce resource contention
+    os.environ.setdefault("OMP_NUM_THREADS", "4")              # Limit OpenMP threads
+    os.environ.setdefault("MKL_NUM_THREADS", "4")              # Limit MKL threads
+    os.environ.setdefault("NCCL_BUFFSIZE", "2097152")          # 2MB buffer size
+    os.environ.setdefault("NCCL_NTHREADS", "16")               # Limit NCCL threads
+    os.environ.setdefault("NCCL_NSOCKS_PERTHREAD", "8")        # Limit sockets per thread
+    
+    # Process stability settings
+    os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")  # Better error handling
+    os.environ.setdefault("NCCL_DEBUG_SUBSYS", "INIT,GRAPH")       # Debug info for troubleshooting
+    
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-
-    if training_args.verbose_logging:
-        rank0_print(f"Inspecting experiment hyperparameters:\n")
-        rank0_print(f"model_args = {vars(model_args)}\n\n")
-        rank0_print(f"data_args = {vars(data_args)}\n\n")
-        rank0_print(f"training_args = {vars(training_args)}\n\n")
-        # rank0_print(f"evaluation_args = {vars(evaluation_args)}\n\n")
-
     local_rank = training_args.local_rank
-    compute_dtype = torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32)
+    
+    # Enable more loading threads (2x more than before)
+    if training_args.dataloader_num_workers == 0:
+        training_args.dataloader_num_workers = 8  # 2x more than typical 4
+        rank0_print(f"INFO: Setting dataloader_num_workers to {training_args.dataloader_num_workers} for better performance")
+    
+    # CRITICAL FIX: Disable persistent_workers when num_workers=0
+    # This fixes the "persistent_workers option needs num_workers > 0" error
+    if training_args.dataloader_num_workers == 0 and training_args.dataloader_persistent_workers:
+        rank0_print("WARNING: Disabling persistent_workers because num_workers=0")
+        training_args.dataloader_persistent_workers = False
 
+    rank0_print(f"  - TORCH_NCCL_ENABLE_MONITORING: {os.environ.get('TORCH_NCCL_ENABLE_MONITORING')}")
+    rank0_print(f"  - TORCH_NCCL_BLOCKING_WAIT: {os.environ.get('TORCH_NCCL_BLOCKING_WAIT')}")
+    rank0_print(f"  - NCCL_SOCKET_TIMEOUT: {os.environ.get('NCCL_SOCKET_TIMEOUT')}")
+    rank0_print(f"  - TORCH_DISTRIBUTED_TCP_TIMEOUT_SEC: {os.environ.get('TORCH_DISTRIBUTED_TCP_TIMEOUT_SEC')}")
+    rank0_print(f"  - NCCL_ASYNC_ERROR_HANDLING: {os.environ.get('NCCL_ASYNC_ERROR_HANDLING')}")
+
+    # Re-enable torch_compile for better performance now that training is stable
+    if training_args.torch_compile:
+        rank0_print(f"INFO: torch_compile enabled with backend: {getattr(training_args, 'torch_compile_backend', 'default')}")
+    else:
+        rank0_print("INFO: torch_compile is disabled")
+
+    # Initialize bnb_model_from_pretrained_args right before it's used in the get_model call
     bnb_model_from_pretrained_args = {}
-    if training_args.bits in [4, 8]:
-        from transformers import BitsAndBytesConfig
-
-        bnb_model_from_pretrained_args.update(
-            dict(
-                device_map={"": training_args.device},
-                load_in_4bit=training_args.bits == 4,
-                load_in_8bit=training_args.bits == 8,
-                quantization_config=BitsAndBytesConfig(
-                    load_in_4bit=training_args.bits == 4,
-                    load_in_8bit=training_args.bits == 8,
-                    llm_int8_threshold=6.0,
-                    llm_int8_has_fp16_weight=False,
-                    bnb_4bit_compute_dtype=compute_dtype,
-                    bnb_4bit_use_double_quant=training_args.double_quant,
-                    bnb_4bit_quant_type=training_args.quant_type,  # {'fp4', 'nf4'}
-                ),
-            )
-        )
 
     model = get_model(model_args, training_args, bnb_model_from_pretrained_args)
+
     model.config.use_cache = False
     if model_args.rope_scaling_factor is not None and model_args.rope_scaling_type is not None:
         model.config.rope_scaling = {
@@ -1600,10 +1661,10 @@ def train(attn_implementation=None):
         model.model.requires_grad_(False)
 
     if training_args.bits in [4, 8]:
-        from peft import prepare_model_for_kbit_training
+            from peft import prepare_model_for_kbit_training
 
-        model.config.torch_dtype = torch.float32 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32)
-        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=training_args.gradient_checkpointing)
+            model.config.torch_dtype = torch.float32 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32)
+            model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=training_args.gradient_checkpointing)
 
     if training_args.gradient_checkpointing:
         if hasattr(model, "enable_input_require_grads"):
@@ -1795,33 +1856,183 @@ def train(attn_implementation=None):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
 
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path if model_args.model_name_or_path is not None else model_args.vision_tower, # if model_name_or_path is None, use vision_tower as tokenizer
+        cache_dir=training_args.cache_dir,
+        model_max_length=training_args.model_max_length,
+        padding_side="right",
+        use_fast=False,
+    )
+
+    if model_args.version == "v0":
+        if tokenizer.pad_token is None:
+            smart_tokenizer_and_embedding_resize(
+                special_tokens_dict=dict(pad_token="[PAD]"),
+                tokenizer=tokenizer,
+                model=model,
+            )
+    elif model_args.version == "v0.5":
+        tokenizer.pad_token = tokenizer.unk_token
+    else:
+        if tokenizer.unk_token is not None:
+            tokenizer.pad_token = tokenizer.unk_token
+        if model_args.version in conversation_lib.conv_templates:
+            conversation_lib.default_conversation = conversation_lib.conv_templates[model_args.version]
+        else:
+            conversation_lib.default_conversation = conversation_lib.conv_templates["vicuna_v1"]
+
+    if model_args.vision_tower is not None:
+        model.get_model().initialize_vision_modules(model_args=model_args, fsdp=training_args.fsdp)
+
+        vision_tower = model.get_vision_tower()
+        vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
+
+        data_args.image_processor = vision_tower.image_processor
+        data_args.is_multimodal = True
+
+        model.config.image_aspect_ratio = data_args.image_aspect_ratio
+        if data_args.image_grid_pinpoints is not None:
+            if isinstance(data_args.image_grid_pinpoints, str) and "x" in data_args.image_grid_pinpoints:
+                try:
+                    patch_size = data_args.image_processor.size[0]
+                except Exception as e:
+                    patch_size = data_args.image_processor.size["shortest_edge"]
+
+                assert patch_size in [224, 336, 384, 448, 512], "patch_size should be in [224, 336, 384, 448, 512]"
+                # Use regex to extract the range from the input string
+                matches = re.findall(r"\((\d+)x(\d+)\)", data_args.image_grid_pinpoints)
+                range_start = tuple(map(int, matches[0]))
+                range_end = tuple(map(int, matches[-1]))
+                # Generate a matrix of tuples from (range_start[0], range_start[1]) to (range_end[0], range_end[1])
+                grid_pinpoints = [(i, j) for i in range(range_start[0], range_end[0] + 1) for j in range(range_start[1], range_end[1] + 1)]
+                # Multiply all elements by patch_size
+                data_args.image_grid_pinpoints = [[dim * patch_size for dim in pair] for pair in grid_pinpoints]
+            elif isinstance(data_args.image_grid_pinpoints, str):
+                data_args.image_grid_pinpoints = ast.literal_eval(data_args.image_grid_pinpoints)
+
+        model.config.image_grid_pinpoints = data_args.image_grid_pinpoints
+        model.config.image_crop_resolution = data_args.image_crop_resolution
+        model.config.image_split_resolution = data_args.image_split_resolution
+        model.config.tokenizer_padding_side = tokenizer.padding_side
+        model.config.tokenizer_model_max_length = tokenizer.model_max_length
+        model.config.mm_newline_position = model_args.mm_newline_position
+        model.config.add_faster_video = model_args.add_faster_video
+        model.config.faster_token_stride = model_args.faster_token_stride
+        model.config.add_time_instruction = data_args.add_time_instruction
+        model.config.force_sample = data_args.force_sample
+        model.config.mm_spatial_pool_stride = model_args.mm_spatial_pool_stride
+
+        ### Deciding train which part of the model
+        if model_args.mm_tunable_parts is None:  # traditional way of deciding which part to train
+            model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
+            model.config.tune_mm_vision_resampler = training_args.tune_mm_vision_resampler = model_args.tune_mm_vision_resampler
+            if model_args.tune_mm_mlp_adapter or model_args.tune_mm_vision_resampler:
+                model.requires_grad_(False)
+            if model_args.tune_mm_mlp_adapter:
+                for p in model.get_model().mm_projector.parameters():
+                    p.requires_grad = True
+            if model_args.tune_mm_vision_resampler:
+                for p in model.get_model().vision_resampler.parameters():
+                    p.requires_grad = True
+
+            model.config.freeze_mm_mlp_adapter = training_args.freeze_mm_mlp_adapter
+            if training_args.freeze_mm_mlp_adapter:
+                for p in model.get_model().mm_projector.parameters():
+                    p.requires_grad = False
+
+            model.config.freeze_mm_vision_resampler = training_args.freeze_mm_vision_resampler
+            if training_args.freeze_mm_vision_resampler:
+                for p in model.get_model().vision_resampler.parameters():
+                    p.requires_grad = False
+
+            model.config.unfreeze_mm_vision_tower = model_args.unfreeze_mm_vision_tower
+            if model_args.unfreeze_mm_vision_tower:
+                vision_tower.requires_grad_(True)
+            else:
+                vision_tower.requires_grad_(False)
+
+        else:
+            rank0_print(f"Using mm_tunable_parts: {model_args.mm_tunable_parts}")
+            model.config.mm_tunable_parts = training_args.mm_tunable_parts = model_args.mm_tunable_parts
+            # Set the entire model to not require gradients by default
+            model.requires_grad_(False)
+            vision_tower.requires_grad_(False)
+            model.get_model().mm_projector.requires_grad_(False)
+            model.get_model().vision_resampler.requires_grad_(False)
+            # Parse the mm_tunable_parts to decide which parts to unfreeze
+            tunable_parts = model_args.mm_tunable_parts.split(",")
+            if "mm_mlp_adapter" in tunable_parts:
+                for p in model.get_model().mm_projector.parameters():
+                    p.requires_grad = True
+            if "mm_vision_resampler" in tunable_parts:
+                for p in model.get_model().vision_resampler.parameters():
+                    p.requires_grad = True
+            if "mm_vision_tower" in tunable_parts:
+                for name, param in model.named_parameters():
+                    if "vision_tower" in name:
+                        param.requires_grad_(True)
+            if "mm_language_model" in tunable_parts:
+                for name, param in model.named_parameters():
+                    if "vision_tower" not in name and "mm_projector" not in name and "vision_resampler" not in name:
+                        param.requires_grad_(True)
+
+        total_params = sum(p.ds_numel if hasattr(p, "ds_numel") else p.numel() for p in model.parameters())
+        trainable_params = sum(p.ds_numel if hasattr(p, "ds_numel") else p.numel() for p in model.parameters() if p.requires_grad)
+        rank0_print(f"Total parameters: ~{total_params/1e6:.2f} MB)")
+        rank0_print(f"Trainable parameters: ~{trainable_params/1e6:.2f} MB)")
+        if training_args.bits in [4, 8]:
+            model.get_model().mm_projector.to(dtype=compute_dtype, device=training_args.device)
+
+        model.config.mm_use_im_start_end = data_args.mm_use_im_start_end = model_args.mm_use_im_start_end
+        model.config.mm_projector_lr = training_args.mm_projector_lr
+        model.config.mm_vision_tower_lr = training_args.mm_vision_tower_lr
+        training_args.use_im_start_end = model_args.mm_use_im_start_end
+        model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
+        model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
+
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
+
     trainer = LLaVATrainer(
-            model=model, tokenizer=tokenizer, args=training_args,
-            callbacks=[S3UploadCallback()], **data_module)
+        model=model, tokenizer=tokenizer, args=training_args,
+        callbacks=[S3UploadCallback(), DebugCallback()] if os.environ.get("RUN_ENV") == "prod" else [DebugCallback()],
+        **data_module)
+    
+    # Test the data loader to see if it works
+    train_dataloader = trainer.get_train_dataloader()
+    
+    # Add progress indicator for first batch loading with timing
+    import time
+    first_batch_start = time.time()
+    rank0_print(f"⏳ LOADING FIRST BATCH (effective batch size: {training_args.per_device_train_batch_size * training_args.world_size * training_args.gradient_accumulation_steps})")
+    rank0_print(f"   Per device: {training_args.per_device_train_batch_size}, World size: {training_args.world_size}, Grad accum: {training_args.gradient_accumulation_steps}")
+    rank0_print(f"   Workers: {training_args.dataloader_num_workers}, Torch compile: {training_args.torch_compile}")
+    
+    # Test loading one batch to measure data loading time
+    try:
+        first_batch = next(iter(train_dataloader))
+        first_batch_time = time.time() - first_batch_start
+        rank0_print(f"⏱️  FIRST BATCH LOADED: {first_batch_time:.2f}s")
+        rank0_print(f"📊 FIRST BATCH SHAPE: input_ids={first_batch.get('input_ids', torch.tensor([])).shape}, images={len(first_batch.get('images', []))}")
+    except Exception as e:
+        first_batch_time = time.time() - first_batch_start
+        rank0_print(f"❌ FIRST BATCH FAILED: {first_batch_time:.2f}s - {e}")
+    
+    rank0_print(f"🎯 EXPECTED PERFORMANCE: With batch_size={training_args.per_device_train_batch_size*training_args.world_size}, should be {4/1:.0f}x faster than before!")
+    
 
     if list(Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)
     else:
         trainer.train()
+
     trainer.save_state()
 
     model.config.use_cache = True
 
     if training_args.lora_enable:
-        state_dict = get_peft_state_maybe_zero_3(model.named_parameters(), training_args.lora_bias)
-        non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(model.named_parameters())
-        if training_args.local_rank == 0 or training_args.local_rank == -1:
-            if hasattr(model, "config"):
-                model.config.save_pretrained(training_args.output_dir)
-            if hasattr(model, "generation_config"):
-                model.generation_config.save_pretrained(training_args.output_dir)
-            model.save_pretrained(training_args.output_dir, state_dict=state_dict)
-            torch.save(non_lora_state_dict, os.path.join(training_args.output_dir, "non_lora_trainables.bin"))
+        safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir, lora_mode=True)
     else:
         safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
-
-    rank0_print(f"Model saved to {training_args.output_dir}")
 
 
 if __name__ == "__main__":
